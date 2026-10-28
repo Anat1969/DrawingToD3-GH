@@ -91,6 +91,11 @@
               <label><input type="radio" name="texture" value="0"> <span><b>צורה בלבד</b> גוף נקי, מהיר יותר</span></label>
             </fieldset>
 
+            <p class="service" id="service" data-state="checking" role="status" aria-live="polite">
+              <b>שירות ההמרה:</b> <span id="serviceText">בודקים חיבור...</span>
+            </p>
+            <p class="hint service-hint" id="serviceHint" hidden>אפשר לבחור ציור, לצפות במודל לדוגמה ולפתוח קובץ תלת-ממד קיים. ההמרה תיפתח כשמפתח Meshy יוגדר בשרת.</p>
+
             <div class="actions">
               <button class="btn primary" id="convertBtn" type="button" disabled>המרה למודל</button>
               <button class="btn" id="sampleBtn" type="button">ציור לדוגמה</button>

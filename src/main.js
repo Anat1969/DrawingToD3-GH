@@ -15,6 +15,7 @@ const el = {
   progress: $('progress'), progressBar: $('progressBar'), progressPct: $('progressPct'), progressEta: $('progressEta'),
   status: $('status'), factSize: $('factSize'), factTris: $('factTris'), factSource: $('factSource'),
   downloads: $('downloads'), downloadsEmpty: $('downloadsEmpty'), openLocal: $('openLocalBtn'), localFile: $('localFile'),
+  service: $('service'), serviceText: $('serviceText'), serviceHint: $('serviceHint'),
   archiveList: $('archiveList'), archiveEmpty: $('archiveEmpty'),
 };
 
@@ -25,6 +26,7 @@ const state = {
   jobId: null,
   pollToken: 0,
   editing: false,
+  service: 'checking', // checking | ready | off | unknown
 };
 
 /* ---------------- Stage ---------------- */
@@ -171,7 +173,7 @@ function setStatus(text, kind = '') {
 function setPhase(phase) {
   state.phase = phase;
   const busy = phase === 'uploading' || phase === 'processing';
-  el.convert.disabled = !state.drawing || busy;
+  el.convert.disabled = !state.drawing || busy || state.service === 'off';
   el.sample.hidden = !!state.drawing;
   el.reset.hidden = !state.drawing || busy;
   el.drop.disabled = busy;
@@ -194,7 +196,9 @@ async function useDrawing(src, name) {
     el.preview.hidden = false;
     el.dropEmpty.hidden = true;
     setPhase('ready');
-    setStatus('הציור מוכן. ההמרה לוקחת בדרך כלל שתיים עד חמש דקות.');
+    setStatus(state.service === 'off'
+      ? 'הציור מוכן. ההמרה תיפתח כששירות ההמרה יחובר.'
+      : 'הציור מוכן. ההמרה לוקחת בדרך כלל שתיים עד חמש דקות.');
   } catch {
     setStatus('לא ניתן לקרוא את הקובץ. בוחרים תמונה אחרת.', 'error');
   }
@@ -245,6 +249,7 @@ async function convert() {
 el.convert.addEventListener('click', convert);
 
 function fail(err) {
+  if (err instanceof ApiError && err.code === 'server_not_configured') setService('off');
   setPhase('failed');
   setStatus(err instanceof ApiError ? err.message : ERRORS.failed, 'error');
   el.convert.textContent = 'ניסיון נוסף';
@@ -450,8 +455,28 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+/* ---------------- Conversion service state ---------------- */
+const SERVICE_TEXT = { checking: 'בודקים חיבור...', ready: 'מחובר', off: 'לא מחובר', unknown: 'לא ידוע' };
+function setService(next) {
+  state.service = next;
+  el.service.dataset.state = next;
+  el.serviceText.textContent = SERVICE_TEXT[next];
+  el.serviceHint.hidden = next !== 'off';
+  setPhase(state.phase);
+}
+async function checkService() {
+  try {
+    const res = await fetch('/api/health', { cache: 'no-store' });
+    const d = await res.json();
+    setService(res.ok && d.configured ? 'ready' : res.ok ? 'off' : 'unknown');
+  } catch {
+    setService('unknown'); // offline or no server: do not block, the attempt will explain
+  }
+}
+
 showSample();
 setPhase('idle');
+checkService();
 renderArchive();
 const active = archive.getActive();
 if (active && !location.hash.startsWith('#/model/')) history.replaceState(null, '', '#/model/' + active);

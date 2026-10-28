@@ -37,6 +37,8 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
       ? { status: 'SUCCEEDED', progress: 100, modelUrls: { glb: '/mock/model.glb', stl: '/mock/model.stl', '3mf': '/mock/model.3mf' }, expiresAt: Date.now() + 3 * 864e5, error: null }
       : { status: 'IN_PROGRESS', progress: 40, modelUrls: {}, expiresAt: null, error: null }) });
   });
+  let healthy = true;
+  await page.route('**/api/health', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ configured: healthy }) }));
   await page.route('**/mock/model.glb', (r) => r.fulfill({ path: glbPath, contentType: 'model/gltf-binary' }));
 
   // 1. Home
@@ -89,6 +91,25 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
   await page.waitForFunction(() => document.querySelector('#status').classList.contains('error'));
   ok(/לא מחובר/.test(await page.locator('#status').innerText()), 'server not configured message');
   ok(await page.locator('#convertBtn').innerText() === 'ניסיון נוסף', 'retry offered after failure');
+  ok(await page.locator('#convertBtn').isDisabled(), 'convert disabled once the server reports no key');
+  ok(await page.locator('#serviceHint').isVisible(), 'explains what still works without the key');
+
+  // 5b. Service state on load
+  healthy = false;
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector('#service').dataset.state === 'off');
+  ok(/לא מחובר/.test(await page.locator('#service').innerText()), 'service shows "not connected" on load');
+  await page.click('#sampleBtn');
+  await page.waitForSelector('#preview:not([hidden])');
+  ok(await page.locator('#convertBtn').isDisabled(), 'convert stays disabled while not connected');
+  ok(/יחובר/.test(await page.locator('#status').innerText()), 'status line does not promise a conversion time while not connected');
+  await page.screenshot({ path: path.join(OUT, '04a-not-connected.png') });
+  healthy = true;
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector('#service').dataset.state === 'ready');
+  ok(/מחובר/.test(await page.locator('#service').innerText()) && await page.locator('#serviceHint').isHidden(), 'service shows "connected" when the key exists');
+  await page.click('#sampleBtn');
+  await page.waitForSelector('#preview:not([hidden])');
 
   // 6. Successful conversion
   mode = 'ok';
