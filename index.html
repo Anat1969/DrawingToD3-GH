@@ -43,7 +43,7 @@
       <div class="intro">
         <p class="eyebrow">01 / סטודיו</p>
         <h1 id="studio-title">ציור אחד.<br><span>אובייקט שאפשר להקיף.</span></h1>
-        <p class="lede">מעלים ציור עם נושא ברור על רקע פשוט. המודל חוזר כגוף סגור, מואר מהצד, ואפשר לבחון אותו מכל זווית ולהוריד אותו להדפסה.</p>
+        <p class="lede">מעלים ציור. הקו השחור הופך לחוט רציף במרחב, או לגוף סגור. בוחנים אותו מכל זווית, שומרים לארכיון ומורידים להדפסה.</p>
       </div>
 
       <div class="studio">
@@ -87,11 +87,27 @@
 
             <fieldset class="option engine">
               <legend class="legend"><b>מנוע:</b> איך הציור יהפוך לגוף</legend>
-              <label><input type="radio" name="engine" value="local" checked> <span><b>פיסול מקומי</b> חינם ומיידי. הציור לא יוצא מהמכשיר.</span></label>
+              <label><input type="radio" name="engine" value="line" checked> <span><b>קו במרחב</b> הקו השחור כחוט רציף שמתלפף סביב הצורה. חינם, במכשיר.</span></label>
+              <label><input type="radio" name="engine" value="local"> <span><b>גוף מנופח</b> הצורה כגוף מעוגל וסגור. חינם, במכשיר.</span></label>
               <label><input type="radio" name="engine" value="ai"> <span><b>בינה מלאכותית</b> Meshy משלים גם את הצד האחורי. דורש מפתח בתשלום.</span></label>
             </fieldset>
 
-            <div class="engine-panel" data-engine-panel="local">
+            <div class="engine-panel" data-engine-panel="line">
+              <label class="slider">
+                <span><b>עומק:</b> כמה הקו יוצא מהדף</span>
+                <input type="range" id="depth" min="0" max="100" value="50">
+                <output id="depthVal" dir="ltr">50</output>
+              </label>
+              <label class="slider">
+                <span><b>עובי:</b> עובי החוט</span>
+                <input type="range" id="thickness" min="0" max="100" value="35">
+                <output id="thicknessVal" dir="ltr">35</output>
+              </label>
+              <label class="check"><input type="checkbox" id="continuous" checked> <span><b>חוט אחד</b> הקווים מתחברים וממשיכים מאחורי הצורה</span></label>
+              <label class="check"><input type="checkbox" id="smoke" checked> <span><b>עשן צבע</b> כתמי הצבע כענן שקוף בתוך החלל</span></label>
+            </div>
+
+            <div class="engine-panel" data-engine-panel="local" hidden>
               <label class="slider">
                 <span><b>נפח:</b> עובי הגוף</span>
                 <input type="range" id="volume" min="0" max="100" value="50" aria-describedby="volumeVal">
@@ -140,6 +156,10 @@
             <div class="downloads" id="downloads">
               <p class="hint" id="downloadsEmpty">הקבצים יופיעו כאן אחרי ההמרה.</p>
             </div>
+            <div class="save" id="saveBox" hidden>
+              <label class="name-field"><span><b>שם:</b></span><input type="text" id="workName" maxlength="80" autocomplete="off"></label>
+              <button class="btn" id="saveBtn" type="button">שמירה לארכיון</button>
+            </div>
             <div class="actions">
               <button class="btn" id="openLocalBtn" type="button">פתיחת קובץ תלת-ממד</button>
             </div>
@@ -153,10 +173,10 @@
     <section class="view" data-view="archive" aria-labelledby="archive-title" hidden>
       <div class="intro">
         <p class="eyebrow">02 / ארכיון</p>
-        <h1 id="archive-title">ההמרות האחרונות</h1>
-        <p class="lede">נשמר בדפדפן הזה בלבד. קישורי הקבצים מתחדשים בכל פתיחה, כי שירות ההמרה מוחק תוצאות אחרי תקופה.</p>
+        <h1 id="archive-title">ארכיון העבודות</h1>
+        <p class="lede">כל עבודה שנשמרה: הציור, ההגדרות ותמונת הפסל. פתיחה בונה את הפסל מחדש מהציור. נשמר בדפדפן הזה בלבד.</p>
       </div>
-      <p class="empty" id="archiveEmpty">עדיין אין המרות. ההמרה הראשונה תופיע כאן.</p>
+      <p class="empty" id="archiveEmpty">עדיין אין עבודות. אחרי פיסול לוחצים "שמירה לארכיון", והעבודה תופיע כאן.</p>
       <ol class="archive" id="archiveList"></ol>
     </section>
 
@@ -173,7 +193,8 @@
         <li><b>קו:</b> סגור<p>קו מתאר רציף עוזר להבין איפה הגוף נגמר. כתמי צבע פתוחים הופכים למרקם.</p></li>
         <li><b>זווית:</b> שלושה רבעים<p>מבט מעט מהצד נותן למחולל מידע על העומק. חזית שטוחה נותנת גוף שטוח.</p></li>
         <li><b>בדיקה:</b> חימר וקו<p>אחרי ההמרה עוברים למצב "חימר" כדי לשפוט צורה בלי צבע, ולמצב "קו" כדי לראות את המבנה.</p></li>
-        <li><b>פיסול מקומי:</b> ניפוח<p>שיטת הניפוח של Teddy (Igarashi, 1999) ו-Monster Mash (2020): מזהים את קו המתאר, ממלאים את השטח הסגור, והמרחק מהקו הופך לגובה. הקו השחור בולט כנפח. התוצאה תבליט עגול דו-צדדי, לא ניחוש של הצד האחורי.</p></li>
+        <li><b>קו במרחב:</b> חוט<p>מוצאים את מרכז כל קו שחור (שלד בשיטת Zhang-Suen, 1984), עוקבים אחריו לקו רציף, ונותנים לו עומק: קו מתאר יושב על שפת הצורה, קו פנימי על פני הצורה. הקווים מתחברים לחוט אחד שעובר מאחורי הצורה, כמו כדור צמר. כתמי הצבע נשארים כעשן שקוף בתוך החלל.</p></li>
+        <li><b>גוף מנופח:</b> ניפוח<p>שיטת הניפוח של Teddy (Igarashi, 1999) ו-Monster Mash (2020): מזהים את קו המתאר, ממלאים את השטח הסגור, והמרחק מהקו הופך לגובה. הקו השחור בולט כנפח. התוצאה תבליט עגול דו-צדדי, לא ניחוש של הצד האחורי.</p></li>
         <li><b>בקרת איכות:</b> גוף סגור<p>אחרי כל פיסול נבדק שכל צלע משותפת לשני משולשים בדיוק. זה התנאי של תוכנות הדפסה לגוף אטום, והתוצאה מוצגת בשורה "גוף סגור להדפסה".</p></li>
         <li><b>הדפסה:</b> STL או 3MF<p>לפני הדפסה פותחים את הקובץ בתוכנת הפריסה ובודקים שהגוף סגור ובקנה המידה הנכון.</p></li>
       </ol>

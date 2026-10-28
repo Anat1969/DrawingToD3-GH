@@ -4,7 +4,8 @@ import { createStage, sampleObject } from './viewer.js';
 import { prepareDrawing, checkFile } from './image.js';
 import { startConversion, getStatus, ApiError, ERRORS } from './api.js';
 import * as archive from './history.js';
-import { prepareSculpt, sculptMesh } from './sculpt.js';
+import { prepareSculpt, sculptMesh, lineSculpture } from './sculpt.js';
+import * as works from './store.js';
 
 const POLL_MS = 3000;
 const $ = (id) => document.getElementById(id);
@@ -17,11 +18,15 @@ const el = {
   status: $('status'), factSize: $('factSize'), factTris: $('factTris'), factSource: $('factSource'),
   downloads: $('downloads'), downloadsEmpty: $('downloadsEmpty'), openLocal: $('openLocalBtn'), localFile: $('localFile'),
   factClosed: $('factClosed'), volume: $('volume'), volumeVal: $('volumeVal'), lineRelief: $('lineRelief'), lineVal: $('lineVal'),
+  depth: $('depth'), depthVal: $('depthVal'), thickness: $('thickness'), thicknessVal: $('thicknessVal'), continuous: $('continuous'), smoke: $('smoke'),
+  saveBox: $('saveBox'), workName: $('workName'), saveBtn: $('saveBtn'),
   service: $('service'), serviceText: $('serviceText'), serviceHint: $('serviceHint'),
   archiveList: $('archiveList'), archiveEmpty: $('archiveEmpty'),
 };
 
 /* ---------------- State ---------------- */
+const ENGINES = ['line', 'local', 'ai'];
+const ENGINE_LABEL = { line: 'קו במרחב', local: 'גוף מנופח', ai: 'בינה מלאכותית' };
 const state = {
   drawing: null,   // { dataUrl, thumb, name }
   phase: 'idle',   // idle | ready | uploading | processing | done | failed
@@ -29,10 +34,11 @@ const state = {
   pollToken: 0,
   editing: false,
   service: 'checking', // checking | ready | off | unknown
-  engine: readEngine(), // local | ai
-  sculpt: null,         // analysed drawing for the local engine
+  engine: readEngine(), // line | local | ai
+  sculpt: null,         // drawing analysed once for the local engines
+  workId: null,         // saved work currently open
 };
-function readEngine() { try { return localStorage.getItem('drawing3d.engine') === 'ai' ? 'ai' : 'local'; } catch { return 'local'; } }
+function readEngine() { try { const v = localStorage.getItem('drawing3d.engine.v2'); return ENGINES.includes(v) ? v : 'line'; } catch { return 'line'; } }
 
 /* ---------------- Stage ---------------- */
 let stage = null;
@@ -45,6 +51,7 @@ try {
 
 function showSample() {
   if (!stage) return;
+  stage.setBackdrop('dark');
   const info = stage.setObject(sampleObject(), { source: 'מודל לדוגמה' });
   setFacts(info);
   setDownloads({ local: true });
@@ -57,6 +64,7 @@ function showSample() {
 let ann = null;
 function annText(info) {
   const [x, y, z] = info.proportion;
+  if (info.lines) return `<b>קווים:</b> <span dir="ltr">${info.lines}</span>${info.continuous ? ' · חוט אחד' : ''}<br><b>פרופורציה:</b> <span dir="ltr">${x} × ${y} × ${z}</span>`;
   return `<b>פרופורציה:</b> <span dir="ltr">${x} × ${y} × ${z}</span><br><b>משולשים:</b> <span dir="ltr">${info.tris.toLocaleString('he-IL')}</span>`;
 }
 function updateAnnotation(info) { if (ann) { ann.box.innerHTML = annText(info); ann.last = ''; } }
@@ -185,7 +193,8 @@ function setPhase(phase) {
   const busy = phase === 'uploading' || phase === 'processing' || phase === 'sculpting';
   const needsService = state.engine === 'ai' && state.service === 'off';
   el.convert.disabled = !state.drawing || busy || needsService;
-  el.convert.textContent = phase === 'failed' ? 'ניסיון נוסף' : state.engine === 'local' ? 'פיסול מהציור' : 'המרה למודל';
+  el.convert.textContent = phase === 'failed' ? 'ניסיון נוסף' : state.engine === 'ai' ? 'המרה למודל' : 'פיסול מהציור';
+  el.saveBox.hidden = phase !== 'sculpted';
   document.querySelectorAll('input[name="engine"]').forEach((r) => { r.disabled = busy; });
   el.sample.hidden = !!state.drawing;
   el.reset.hidden = !state.drawing || busy;
@@ -206,6 +215,9 @@ async function useDrawing(src, name) {
     const { dataUrl, thumb } = await prepareDrawing(src);
     state.drawing = { dataUrl, thumb, name };
     state.sculpt = null;
+    state.workId = null;
+    el.workName.value = name.replace(/\.[a-z0-9]+$/i, '');
+    el.saveBtn.textContent = 'שמירה לארכיון';
     el.preview.src = dataUrl;
     el.preview.hidden = false;
     el.dropEmpty.hidden = true;
@@ -217,7 +229,7 @@ async function useDrawing(src, name) {
 }
 
 function readyText() {
-  if (state.engine === 'local') return 'הציור מוכן. הפיסול לוקח שנייה או שתיים.';
+  if (state.engine !== 'ai') return 'הציור מוכן. הפיסול לוקח שנייה או שתיים.';
   return state.service === 'off'
     ? 'הציור מוכן. ההמרה תיפתח כששירות ההמרה יחובר. אפשר לעבור לפיסול מקומי.'
     : 'הציור מוכן. ההמרה לוקחת בדרך כלל שתיים עד חמש דקות.';
@@ -240,6 +252,8 @@ el.sample.addEventListener('click', () => useDrawing('/sample-drawing.svg', 'ב�
 el.reset.addEventListener('click', () => {
   state.drawing = null;
   state.sculpt = null;
+  state.workId = null;
+  if (location.hash.startsWith('#/work/')) history.replaceState(null, '', '#/');
   el.preview.hidden = true;
   el.preview.removeAttribute('src');
   el.dropEmpty.hidden = false;
@@ -254,7 +268,7 @@ async function sculptNow() {
   if (!stage) { setStatus('הדפדפן לא תומך בתצוגה תלת-ממדית (WebGL).', 'error'); return; }
   ++state.pollToken;
   state.jobId = null;
-  if (location.hash.startsWith('#/model/')) history.replaceState(null, '', '#/');
+  if (location.hash.startsWith('#/model/')) history.replaceState(null, '', state.workId ? '#/work/' + state.workId : '#/');
   setPhase('sculpting');
   setStatus('מפסלים...');
   await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0))); // let the status paint
@@ -262,7 +276,9 @@ async function sculptNow() {
     if (!state.sculpt) state.sculpt = await prepareSculpt(state.drawing.dataUrl);
     renderSculpt(false);
     setPhase('sculpted');
-    setStatus('הפסל מוכן. מכווננים "נפח" ו"קו", בוחנים במצב "חימר", ומורידים STL להדפסה.', 'ok');
+    setStatus(state.engine === 'line'
+      ? 'הפסל הקווי מוכן. מסובבים כדי לראות את החוט מתלפף מאחור, מכווננים "עומק" ו"עובי", ושומרים לארכיון.'
+      : 'הפסל מוכן. מכווננים "נפח" ו"קו", בוחנים במצב "חימר", ושומרים לארכיון.', 'ok');
   } catch (err) {
     console.warn('sculpt failed', err);
     setPhase('failed');
@@ -270,38 +286,115 @@ async function sculptNow() {
   }
 }
 
+function params() {
+  return state.engine === 'line'
+    ? { depth: el.depth.value / 100, thickness: el.thickness.value / 100, continuous: el.continuous.checked, smoke: el.smoke.checked }
+    : { volume: el.volume.value / 100, line: el.lineRelief.value / 100 };
+}
+
+function setParams(p = {}) {
+  const set = (input, out, v) => { if (typeof v === 'number') { input.value = Math.round(v * 100); out.textContent = input.value; } };
+  set(el.depth, el.depthVal, p.depth);
+  set(el.thickness, el.thicknessVal, p.thickness);
+  set(el.volume, el.volumeVal, p.volume);
+  set(el.lineRelief, el.lineVal, p.line);
+  if (typeof p.continuous === 'boolean') el.continuous.checked = p.continuous;
+  if (typeof p.smoke === 'boolean') el.smoke.checked = p.smoke;
+}
+
 function renderSculpt(keepView) {
-  const { object, closed } = sculptMesh(state.sculpt, { volume: el.volume.value / 100, line: el.lineRelief.value / 100 });
-  const info = stage.setObject(object, { source: 'פיסול מקומי', closed }, { keepView });
+  let info;
+  stage.setBackdrop(state.engine === 'line' ? 'paper' : 'dark');
+  if (state.engine === 'line') {
+    const r = lineSculpture(state.sculpt, params());
+    info = stage.setObject(r.object, { source: 'פיסול קווי', closed: r.closed, lines: r.lines, continuous: r.continuous }, { keepView });
+  } else {
+    const { object, closed } = sculptMesh(state.sculpt, params());
+    info = stage.setObject(object, { source: 'פיסול מקומי', closed }, { keepView });
+  }
   if (keepView) updateAnnotation(info); else resetAnnotation();
   setFacts(info);
   if (!keepView) setDownloads({ local: true });
-  el.caption.innerHTML = `<span>SCULPT / ${escapeHtml(state.drawing.name)}</span><span>פיסול מקומי</span>`;
+  el.caption.innerHTML = `<span>SCULPT / ${escapeHtml(state.drawing.name)}</span><span>${ENGINE_LABEL[state.engine]}</span>`;
 }
 
 let sliderFrame = 0;
-for (const [input, out] of [[el.volume, el.volumeVal], [el.lineRelief, el.lineVal]]) {
-  input.addEventListener('input', () => {
-    out.textContent = input.value;
-    if (state.phase !== 'sculpted' || !state.sculpt) return;
-    cancelAnimationFrame(sliderFrame);
-    sliderFrame = requestAnimationFrame(() => renderSculpt(true));
-  });
+function liveUpdate() {
+  if (state.phase !== 'sculpted' || !state.sculpt) return;
+  cancelAnimationFrame(sliderFrame);
+  sliderFrame = requestAnimationFrame(() => renderSculpt(true));
+}
+for (const [input, out] of [[el.volume, el.volumeVal], [el.lineRelief, el.lineVal], [el.depth, el.depthVal], [el.thickness, el.thicknessVal]]) {
+  input.addEventListener('input', () => { out.textContent = input.value; liveUpdate(); });
+}
+el.continuous.addEventListener('change', liveUpdate);
+el.smoke.addEventListener('change', liveUpdate);
+
+/* ---------------- Saving to the archive ---------------- */
+async function saveWork() {
+  if (state.phase !== 'sculpted' || !state.drawing) return;
+  const id = state.workId || works.newId();
+  const existing = state.workId ? await works.getWork(id).catch(() => null) : null;
+  const work = {
+    id,
+    name: el.workName.value.trim() || state.drawing.name,
+    engine: state.engine,
+    params: params(),
+    drawing: state.drawing.dataUrl,
+    drawingThumb: state.drawing.thumb,
+    thumb: stage.snapshot(),
+    created: existing ? existing.created : new Date().toISOString(),
+    date: new Date().toISOString(),
+  };
+  try {
+    await works.saveWork(work);
+  } catch (err) {
+    console.warn('save failed', err);
+    setStatus('השמירה נכשלה. ייתכן שהדפדפן חוסם אחסון (חלון פרטי) או שהאחסון מלא.', 'error');
+    return;
+  }
+  state.workId = id;
+  state.drawing.name = work.name;
+  el.saveBtn.textContent = 'עדכון בארכיון';
+  history.replaceState(null, '', '#/work/' + id);
+  setStatus(existing ? 'העבודה עודכנה בארכיון.' : 'העבודה נשמרה בארכיון.', 'ok');
+  const menu = document.querySelector('ai-menu');
+  if (menu) menu.status = 'נשמר';
+}
+el.saveBtn.addEventListener('click', saveWork);
+
+async function openWork(id) {
+  let work;
+  try { work = await works.getWork(id); } catch { work = null; }
+  if (!work) { setStatus('העבודה לא נמצאה בארכיון של הדפדפן הזה.', 'error'); return; }
+  state.drawing = { dataUrl: work.drawing, thumb: work.drawingThumb, name: work.name };
+  state.sculpt = null;
+  state.workId = work.id;
+  el.preview.src = work.drawing;
+  el.preview.hidden = false;
+  el.dropEmpty.hidden = true;
+  el.workName.value = work.name;
+  el.saveBtn.textContent = 'עדכון בארכיון';
+  setEngine(work.engine === 'local' ? 'local' : 'line');
+  setParams(work.params);
+  await sculptNow();
 }
 
 function setEngine(next) {
   state.engine = next;
-  try { localStorage.setItem('drawing3d.engine', next); } catch { /* ignore */ }
+  try { localStorage.setItem('drawing3d.engine.v2', next); } catch { /* ignore */ }
   document.querySelectorAll('input[name="engine"]').forEach((r) => { r.checked = r.value === next; });
   document.querySelectorAll('[data-engine-panel]').forEach((p) => { p.hidden = p.dataset.enginePanel !== next; });
   setPhase(state.phase);
   if (state.phase === 'ready') setStatus(readyText());
+  // Switching between the two local engines re-sculpts the same drawing at once.
+  if (state.phase === 'sculpted' && state.sculpt && next !== 'ai') { renderSculpt(false); }
 }
 document.querySelectorAll('input[name="engine"]').forEach((r) => r.addEventListener('change', () => setEngine(r.value)));
 
 async function convert() {
   if (!state.drawing || state.phase === 'uploading' || state.phase === 'processing' || state.phase === 'sculpting') return;
-  if (state.engine === 'local') return sculptNow();
+  if (state.engine !== 'ai') return sculptNow();
   const texture = document.querySelector('input[name="texture"]:checked').value === '1';
   setPhase('uploading');
   setProgress(2, '');
@@ -382,6 +475,7 @@ async function showResult(id, d) {
   el.note.textContent = 'טוענים את המודל...';
   try {
     const obj = await stage.loadUrl(d.modelUrls.glb, 'glb');
+    stage.setBackdrop('dark');
     const info = stage.setObject(obj, { source: 'Meshy' });
     resetAnnotation();
     setFacts(info);
@@ -416,6 +510,7 @@ el.localFile.addEventListener('change', async (e) => {
   el.note.textContent = 'טוענים את הקובץ...';
   try {
     const obj = await stage.loadUrl(url, kind);
+    stage.setBackdrop('dark');
     const info = stage.setObject(obj, { source: file.name });
     resetAnnotation();
     setFacts(info);
@@ -433,12 +528,25 @@ el.localFile.addEventListener('change', async (e) => {
 });
 
 /* ---------------- Archive ---------------- */
-function renderArchive() {
-  const items = archive.list();
+// Two sources: saved works (IndexedDB) and AI conversions (task ids in localStorage).
+let archiveCache = [];
+async function renderArchive() {
+  const saved = await works.listWorks().catch(() => []);
+  const items = [
+    ...saved.map((w) => ({ kind: 'work', id: w.id, name: w.name, date: w.date, thumb: w.thumb, meta: ENGINE_LABEL[w.engine] || 'פסל' })),
+    ...archive.list().map((it) => {
+      const st = { SUCCEEDED: 'מוכן', FAILED: 'נכשל', CANCELED: 'בוטל' }[it.status] || 'בתהליך';
+      const expired = it.expiresAt && it.expiresAt < Date.now();
+      return { kind: 'task', id: it.id, name: it.name, date: it.date, thumb: it.thumb, meta: 'בינה מלאכותית · ' + (expired ? 'פג תוקף' : st) };
+    }),
+  ].sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  archiveCache = items;
+
   el.archiveEmpty.hidden = items.length > 0;
   el.archiveList.textContent = '';
   for (const it of items) {
     const li = document.createElement('li');
+    li.dataset.kind = it.kind;
     const thumb = document.createElement('div');
     thumb.className = 'thumb';
     if (it.thumb) {
@@ -456,14 +564,12 @@ function renderArchive() {
     name.textContent = it.name || 'ציור';
     const meta = document.createElement('div');
     meta.className = 'meta';
-    const st = { SUCCEEDED: 'מוכן', FAILED: 'נכשל', CANCELED: 'בוטל' }[it.status] || 'בתהליך';
-    const expired = it.expiresAt && it.expiresAt < Date.now();
-    meta.textContent = `${new Date(it.date).toLocaleDateString('he-IL')} · ${expired ? 'פג תוקף' : st}`;
+    meta.textContent = `${new Date(it.date).toLocaleDateString('he-IL')} · ${it.meta}`;
     const row = document.createElement('div');
     row.className = 'row';
     const open = document.createElement('a');
     open.className = 'btn';
-    open.href = '#/model/' + encodeURIComponent(it.id);
+    open.href = (it.kind === 'work' ? '#/work/' : '#/model/') + encodeURIComponent(it.id);
     open.textContent = 'פתיחה בסטודיו';
     row.appendChild(open);
     if (state.editing) {
@@ -471,7 +577,12 @@ function renderArchive() {
       del.type = 'button';
       del.className = 'btn quiet';
       del.textContent = 'מחיקה';
-      del.addEventListener('click', () => { archive.remove(it.id); renderArchive(); });
+      del.addEventListener('click', async () => {
+        if (it.kind === 'work') await works.deleteWork(it.id).catch(() => {});
+        else archive.remove(it.id);
+        if (state.workId === it.id) { state.workId = null; el.saveBtn.textContent = 'שמירה לארכיון'; }
+        renderArchive();
+      });
       row.appendChild(del);
     }
     body.append(name, meta, row);
@@ -488,7 +599,7 @@ function updateMenu() {
   const apply = () => {
     menu.items = [
       { label: 'מצב עריכה', pressed: state.editing, onSelect: () => { state.editing = !state.editing; renderArchive(); } },
-      { label: 'ניקוי הארכיון', disabled: archive.list().length === 0, onSelect: () => { if (confirm('למחוק את כל ההמרות מהארכיון בדפדפן הזה?')) { archive.clearAll(); renderArchive(); } } },
+      { label: 'ניקוי הארכיון', disabled: archiveCache.length === 0, onSelect: async () => { if (confirm('למחוק את כל העבודות מהארכיון בדפדפן הזה?')) { archive.clearAll(); await works.clearWorks().catch(() => {}); state.workId = null; renderArchive(); } } },
     ];
     menu.status = state.editing ? 'מצב עריכה' : '';
   };
@@ -501,9 +612,11 @@ function route() {
   const hash = location.hash || '#/';
   let view = 'studio';
   let modelId = null;
+  let workId = null;
   if (hash.startsWith('#/archive')) view = 'archive';
   else if (hash.startsWith('#/method')) view = 'method';
   else if (hash.startsWith('#/model/')) modelId = decodeURIComponent(hash.slice(8));
+  else if (hash.startsWith('#/work/')) workId = decodeURIComponent(hash.slice(7));
 
   document.querySelectorAll('[data-view]').forEach((s) => { s.hidden = s.dataset.view !== view; });
   document.querySelectorAll('[data-route]').forEach((a) => {
@@ -514,8 +627,10 @@ function route() {
   if (view === 'archive') renderArchive();
   if (modelId && modelId !== state.jobId) {
     state.jobId = modelId;
+    setEngine('ai');
     openTask(modelId);
   }
+  if (workId && workId !== state.workId) openWork(workId);
   window.scrollTo({ top: 0 });
 }
 addEventListener('hashchange', route);

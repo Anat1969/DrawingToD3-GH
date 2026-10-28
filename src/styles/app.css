@@ -186,6 +186,14 @@ input[type="range"] { accent-color: var(--window); width: 120px; }
 .slider input[type="range"] { width: 100%; }
 .slider output { font-family: var(--mono); font-size: 12px; color: var(--paper); text-align: left; }
 .option input:disabled + span { opacity: 0.55; }
+.check { display: flex; gap: 10px; align-items: baseline; font-size: 13.5px; color: var(--muted); cursor: pointer; }
+.check b { color: var(--paper); font-weight: 600; margin-inline-end: 6px; }
+.check input { accent-color: var(--window); }
+.save { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.name-field { display: grid; gap: 6px; font-size: 13.5px; color: var(--muted); min-width: 0; }
+.name-field b { color: var(--paper); font-weight: 600; }
+.name-field input { width: 100%; min-width: 0; padding: 10px 12px; background: var(--ink-0); border: 1px solid var(--line-strong); color: var(--paper); font-size: 14px; }
+.name-field input:focus { border-color: var(--window); outline: none; }
 .service { margin: 4px 0 0; padding-top: 12px; border-top: 1px solid var(--line); font-size: 13.5px; color: var(--muted); }
 .service b { color: var(--paper); font-weight: 600; }
 .service span { font-weight: 600; }
@@ -260,6 +268,11 @@ input[type="range"] { accent-color: var(--window); width: 120px; }
 }
 
 @media (max-width: 430px) { .app-name span { display: none; } }
+@media (max-width: 600px) {
+  .slider { grid-template-columns: minmax(0, 1fr) 2.5em; }
+  .slider > span { grid-column: 1 / -1; }
+}
+#factSource, #factClosed { font-family: var(--sans); font-size: 13.5px; direction: rtl; text-align: left; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-delay: 0ms !important; transition-duration: 0.01ms !important; }
