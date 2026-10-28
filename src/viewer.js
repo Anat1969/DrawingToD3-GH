@@ -144,7 +144,7 @@ export function createStage(container, { onFrame } = {}) {
     return { meshes, tris: Math.round(tris) };
   }
 
-  function setObject(object, meta = {}) {
+  function setObject(object, meta = {}, opts = {}) {
     clear();
     const { meshes, tris } = prepare(object);
     if (!meshes.length) throw new Error('empty_model');
@@ -173,6 +173,7 @@ export function createStage(container, { onFrame } = {}) {
     // Frame with generous dark space around the subject (low key: the darkness does the rest).
     const fov = THREE.MathUtils.degToRad(camera.fov);
     const dist = (sphere.radius / Math.sin(fov / 2)) * 1.35;
+    if (opts.keepView) { applyMode(mode); return info; } // live slider edits: do not move the camera
     controls.target.copy(sphere.center);
     camera.position.copy(sphere.center).add(new THREE.Vector3(-0.5, 0.22, 0.84).normalize().multiplyScalar(dist));
     controls.minDistance = dist * 0.45;

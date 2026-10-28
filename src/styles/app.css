@@ -177,7 +177,16 @@ input[type="range"] { accent-color: var(--window); width: 120px; }
 .option input { accent-color: var(--window); }
 .option b { color: var(--paper); font-weight: 600; margin-inline-end: 6px; }
 
-.service { margin: 16px 0 0; padding-top: 12px; border-top: 1px solid var(--line); font-size: 13.5px; color: var(--muted); }
+.legend { padding: 0; margin: 0 0 2px; font-size: 13.5px; color: var(--muted); }
+.legend b { color: var(--paper); font-weight: 600; }
+.engine-panel { margin-top: 12px; display: grid; gap: 10px; }
+.engine-panel .option { margin-top: 0; }
+.slider { display: grid; grid-template-columns: minmax(0, 1fr) 120px 2.5em; align-items: center; gap: 10px; font-size: 13.5px; color: var(--muted); }
+.slider b { color: var(--paper); font-weight: 600; }
+.slider input[type="range"] { width: 100%; }
+.slider output { font-family: var(--mono); font-size: 12px; color: var(--paper); text-align: left; }
+.option input:disabled + span { opacity: 0.55; }
+.service { margin: 4px 0 0; padding-top: 12px; border-top: 1px solid var(--line); font-size: 13.5px; color: var(--muted); }
 .service b { color: var(--paper); font-weight: 600; }
 .service span { font-weight: 600; }
 .service[data-state="ready"] span { color: var(--ok); }

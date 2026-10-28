@@ -82,8 +82,40 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
   await page.setInputFiles('#file', { name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('hi') });
   ok(/לא נתמך/.test(await page.locator('#status').innerText()), 'wrong file type rejected with message');
 
-  // 5. Unconfigured server message
+  // 4b. Local sculpting engine (free, in the browser)
+  ok(await page.locator('input[name="engine"][value="local"]').isChecked(), 'local sculpting is the default engine');
+  ok(await page.locator('#convertBtn').innerText() === 'פיסול מהציור', 'primary button names the local action');
+  await page.click('#sampleBtn');
+  await page.waitForSelector('#preview:not([hidden])');
+  await page.click('#convertBtn');
+  const sculpted = await page.waitForFunction(() => document.querySelector('#factSource').textContent === 'פיסול מקומי', null, { timeout: 15000 }).then(() => true, () => false);
+  ok(sculpted, 'sample drawing is sculpted locally' + (sculpted ? '' : ': ' + await page.locator('#status').innerText()));
+  ok(await page.locator('#factClosed').innerText() === 'כן', 'sculpt is a closed body (printable)');
+  const tris = Number((await page.locator('#factTris').innerText()).replace(/\D/g, ''));
+  ok(tris > 5000, `sculpt has real geometry (${tris} triangles)`);
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: path.join(OUT, '03a-sculpt.png') });
+  const before = await page.locator('#factSize').innerText();
+  await page.locator('#volume').fill('100');
+  await page.waitForTimeout(400);
+  ok(await page.locator('#factSize').innerText() !== before, 'volume slider reshapes the sculpt live');
+  ok(await page.locator('#volumeVal').innerText() === '100', 'slider value shown');
+  await page.locator('#lineRelief').fill('100');
+  await page.waitForTimeout(400);
+  ok(await page.locator('#factClosed').innerText() === 'כן', 'still closed after slider changes');
+  await page.click('[data-mode="clay"]');
+  await page.waitForTimeout(600);
+  await page.screenshot({ path: path.join(OUT, '03b-sculpt-clay.png') });
+  await page.click('[data-mode="source"]');
+  [dl] = await Promise.all([page.waitForEvent('download'), page.click('[data-export="stl"]')]);
+  const sculptStl = path.join(OUT, 'sculpt.stl'); await dl.saveAs(sculptStl);
+  ok(fs.statSync(sculptStl).size > 100000, 'sculpt exports as STL');
+  await page.click('#resetBtn');
+
+  // 5. Unconfigured server message (AI engine)
   mode = 'unconfigured';
+  await page.click('label:has(input[name="engine"][value="ai"])');
+  ok(await page.locator('#convertBtn').innerText() === 'המרה למודל', 'AI engine names its action');
   await page.click('#sampleBtn');
   await page.waitForSelector('#preview:not([hidden])');
   ok(!(await page.locator('#convertBtn').isDisabled()), 'convert enabled after choosing a drawing');
@@ -146,7 +178,7 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
 
   // 8. Method
   await page.click('a[data-route="method"]');
-  ok(await page.locator('.method li').count() === 6, 'method page renders');
+  ok(await page.locator('.method li').count() === 8, 'method page renders');
   await page.screenshot({ path: path.join(OUT, '08-method.png') });
 
   // 9. Local 3D file

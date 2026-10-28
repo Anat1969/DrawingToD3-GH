@@ -4,6 +4,7 @@ import { createStage, sampleObject } from './viewer.js';
 import { prepareDrawing, checkFile } from './image.js';
 import { startConversion, getStatus, ApiError, ERRORS } from './api.js';
 import * as archive from './history.js';
+import { prepareSculpt, sculptMesh } from './sculpt.js';
 
 const POLL_MS = 3000;
 const $ = (id) => document.getElementById(id);
@@ -15,6 +16,7 @@ const el = {
   progress: $('progress'), progressBar: $('progressBar'), progressPct: $('progressPct'), progressEta: $('progressEta'),
   status: $('status'), factSize: $('factSize'), factTris: $('factTris'), factSource: $('factSource'),
   downloads: $('downloads'), downloadsEmpty: $('downloadsEmpty'), openLocal: $('openLocalBtn'), localFile: $('localFile'),
+  factClosed: $('factClosed'), volume: $('volume'), volumeVal: $('volumeVal'), lineRelief: $('lineRelief'), lineVal: $('lineVal'),
   service: $('service'), serviceText: $('serviceText'), serviceHint: $('serviceHint'),
   archiveList: $('archiveList'), archiveEmpty: $('archiveEmpty'),
 };
@@ -27,7 +29,10 @@ const state = {
   pollToken: 0,
   editing: false,
   service: 'checking', // checking | ready | off | unknown
+  engine: readEngine(), // local | ai
+  sculpt: null,         // analysed drawing for the local engine
 };
+function readEngine() { try { return localStorage.getItem('drawing3d.engine') === 'ai' ? 'ai' : 'local'; } catch { return 'local'; } }
 
 /* ---------------- Stage ---------------- */
 let stage = null;
@@ -50,6 +55,11 @@ function showSample() {
 /* Annotation: circle around the subject, a leading line, and a label of real facts.
    Grammar taken from the inspiration image: "Bold: light". */
 let ann = null;
+function annText(info) {
+  const [x, y, z] = info.proportion;
+  return `<b>פרופורציה:</b> <span dir="ltr">${x} × ${y} × ${z}</span><br><b>משולשים:</b> <span dir="ltr">${info.tris.toLocaleString('he-IL')}</span>`;
+}
+function updateAnnotation(info) { if (ann) { ann.box.innerHTML = annText(info); ann.last = ''; } }
 function resetAnnotation() { ann = null; el.annotation.innerHTML = ''; }
 function drawAnnotation(p) {
   if (!p || !stage || !stage.info) return;
@@ -66,11 +76,10 @@ function drawAnnotation(p) {
     const box = document.createElement('div');
     box.className = 'ann-label';
     box.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
-    const [x, y, z] = info.proportion;
-    box.innerHTML = `<b>פרופורציה:</b> <span dir="ltr">${x} × ${y} × ${z}</span><br><b>משולשים:</b> <span dir="ltr">${info.tris.toLocaleString('he-IL')}</span>`;
+    box.innerHTML = annText(info);
     fo.appendChild(box);
     el.annotation.append(circle, line, fo);
-    ann = { circle, line, fo, last: '' };
+    ann = { circle, line, fo, box, last: '' };
   }
   // Label sits up and to the left of the subject, like the callouts in the image.
   const r = Math.max(24, Math.min(p.r, Math.min(p.w, p.h) * 0.42));
@@ -92,9 +101,10 @@ function drawAnnotation(p) {
 
 function setFacts(info) {
   if (!info) {
-    el.factSize.textContent = el.factTris.textContent = el.factSource.textContent = '-';
+    el.factSize.textContent = el.factTris.textContent = el.factSource.textContent = el.factClosed.textContent = '-';
     return;
   }
+  el.factClosed.textContent = info.closed === true ? 'כן' : info.closed === false ? 'לא' : '-';
   el.factSize.textContent = info.proportion.join(' × ');
   el.factTris.textContent = info.tris.toLocaleString('he-IL');
   el.factSource.textContent = info.source || '-';
@@ -172,12 +182,15 @@ function setStatus(text, kind = '') {
 
 function setPhase(phase) {
   state.phase = phase;
-  const busy = phase === 'uploading' || phase === 'processing';
-  el.convert.disabled = !state.drawing || busy || state.service === 'off';
+  const busy = phase === 'uploading' || phase === 'processing' || phase === 'sculpting';
+  const needsService = state.engine === 'ai' && state.service === 'off';
+  el.convert.disabled = !state.drawing || busy || needsService;
+  el.convert.textContent = phase === 'failed' ? 'ניסיון נוסף' : state.engine === 'local' ? 'פיסול מהציור' : 'המרה למודל';
+  document.querySelectorAll('input[name="engine"]').forEach((r) => { r.disabled = busy; });
   el.sample.hidden = !!state.drawing;
   el.reset.hidden = !state.drawing || busy;
   el.drop.disabled = busy;
-  el.progress.hidden = !(busy || phase === 'done');
+  el.progress.hidden = !(phase === 'uploading' || phase === 'processing' || phase === 'done');
   document.querySelectorAll('input[name="texture"]').forEach((r) => { r.disabled = busy; });
 }
 
@@ -192,16 +205,22 @@ async function useDrawing(src, name) {
   try {
     const { dataUrl, thumb } = await prepareDrawing(src);
     state.drawing = { dataUrl, thumb, name };
+    state.sculpt = null;
     el.preview.src = dataUrl;
     el.preview.hidden = false;
     el.dropEmpty.hidden = true;
     setPhase('ready');
-    setStatus(state.service === 'off'
-      ? 'הציור מוכן. ההמרה תיפתח כששירות ההמרה יחובר.'
-      : 'הציור מוכן. ההמרה לוקחת בדרך כלל שתיים עד חמש דקות.');
+    setStatus(readyText());
   } catch {
     setStatus('לא ניתן לקרוא את הקובץ. בוחרים תמונה אחרת.', 'error');
   }
+}
+
+function readyText() {
+  if (state.engine === 'local') return 'הציור מוכן. הפיסול לוקח שנייה או שתיים.';
+  return state.service === 'off'
+    ? 'הציור מוכן. ההמרה תיפתח כששירות ההמרה יחובר. אפשר לעבור לפיסול מקומי.'
+    : 'הציור מוכן. ההמרה לוקחת בדרך כלל שתיים עד חמש דקות.';
 }
 
 async function pickFile(file) {
@@ -220,6 +239,7 @@ el.drop.addEventListener('drop', (e) => pickFile(e.dataTransfer.files[0]));
 el.sample.addEventListener('click', () => useDrawing('/sample-drawing.svg', 'בית, רישום לדוגמה'));
 el.reset.addEventListener('click', () => {
   state.drawing = null;
+  state.sculpt = null;
   el.preview.hidden = true;
   el.preview.removeAttribute('src');
   el.dropEmpty.hidden = false;
@@ -229,8 +249,59 @@ el.reset.addEventListener('click', () => {
 });
 
 /* ---------------- Conversion ---------------- */
+/* ---------------- Local sculpting engine ---------------- */
+async function sculptNow() {
+  if (!stage) { setStatus('הדפדפן לא תומך בתצוגה תלת-ממדית (WebGL).', 'error'); return; }
+  ++state.pollToken;
+  state.jobId = null;
+  if (location.hash.startsWith('#/model/')) history.replaceState(null, '', '#/');
+  setPhase('sculpting');
+  setStatus('מפסלים...');
+  await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0))); // let the status paint
+  try {
+    if (!state.sculpt) state.sculpt = await prepareSculpt(state.drawing.dataUrl);
+    renderSculpt(false);
+    setPhase('sculpted');
+    setStatus('הפסל מוכן. מכווננים "נפח" ו"קו", בוחנים במצב "חימר", ומורידים STL להדפסה.', 'ok');
+  } catch (err) {
+    console.warn('sculpt failed', err);
+    setPhase('failed');
+    setStatus(ERRORS[err.code] || 'הפיסול נכשל. נסו ציור עם קו מתאר ברור.', 'error');
+  }
+}
+
+function renderSculpt(keepView) {
+  const { object, closed } = sculptMesh(state.sculpt, { volume: el.volume.value / 100, line: el.lineRelief.value / 100 });
+  const info = stage.setObject(object, { source: 'פיסול מקומי', closed }, { keepView });
+  if (keepView) updateAnnotation(info); else resetAnnotation();
+  setFacts(info);
+  if (!keepView) setDownloads({ local: true });
+  el.caption.innerHTML = `<span>SCULPT / ${escapeHtml(state.drawing.name)}</span><span>פיסול מקומי</span>`;
+}
+
+let sliderFrame = 0;
+for (const [input, out] of [[el.volume, el.volumeVal], [el.lineRelief, el.lineVal]]) {
+  input.addEventListener('input', () => {
+    out.textContent = input.value;
+    if (state.phase !== 'sculpted' || !state.sculpt) return;
+    cancelAnimationFrame(sliderFrame);
+    sliderFrame = requestAnimationFrame(() => renderSculpt(true));
+  });
+}
+
+function setEngine(next) {
+  state.engine = next;
+  try { localStorage.setItem('drawing3d.engine', next); } catch { /* ignore */ }
+  document.querySelectorAll('input[name="engine"]').forEach((r) => { r.checked = r.value === next; });
+  document.querySelectorAll('[data-engine-panel]').forEach((p) => { p.hidden = p.dataset.enginePanel !== next; });
+  setPhase(state.phase);
+  if (state.phase === 'ready') setStatus(readyText());
+}
+document.querySelectorAll('input[name="engine"]').forEach((r) => r.addEventListener('change', () => setEngine(r.value)));
+
 async function convert() {
-  if (!state.drawing || state.phase === 'uploading' || state.phase === 'processing') return;
+  if (!state.drawing || state.phase === 'uploading' || state.phase === 'processing' || state.phase === 'sculpting') return;
+  if (state.engine === 'local') return sculptNow();
   const texture = document.querySelector('input[name="texture"]:checked').value === '1';
   setPhase('uploading');
   setProgress(2, '');
@@ -303,7 +374,6 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function showResult(id, d) {
   setPhase('done');
-  el.convert.textContent = 'המרה למודל';
   setDownloads({ urls: d.modelUrls });
   const entry = archive.get(id);
   setStatus('המודל מוכן. גוררים לסיבוב, ובוחרים "חימר" כדי לשפוט צורה.', 'ok');
@@ -475,6 +545,7 @@ async function checkService() {
 }
 
 showSample();
+setEngine(state.engine);
 setPhase('idle');
 checkService();
 renderArchive();
