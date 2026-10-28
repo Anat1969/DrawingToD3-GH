@@ -102,24 +102,29 @@ export function analysePixels(img) {
  * Build an indexed, closed mesh from an analysis.
  * @returns {{positions:Float32Array, uvs:Float32Array, indices:Uint32Array, triangles:number}}
  */
-export function buildSculpt(a, opts = {}) {
+/** Height of the inflated body above the drawing plane, per analysis pixel (pixel units). */
+export function heightField(a, opts = {}) {
   const volume = clamp01(opts.volume ?? DEFAULTS.volume);
   const line = clamp01(opts.line ?? DEFAULTS.line);
-  const { W, H, pad, w0, h0, mask, dist, ink, rim } = a;
+  const { W, H, mask, dist, ink, rim } = a;
   const N = W * H;
-
   let dmax = 0;
   for (let p = 0; p < N; p++) if (dist[p] > dmax) dmax = dist[p];
   const maxH = (0.12 + 0.6 * volume) * dmax;
   const relief = line * 0.12 * dmax;
-
   // Height: sqrt profile gives rounded edges, like a pillow or a cast.
-  let h = new Float32Array(N);
+  const h = new Float32Array(N);
   for (let p = 0; p < N; p++) {
     if (!mask[p] || rim[p]) continue;
     h[p] = maxH * Math.sqrt(dist[p] / dmax) + relief * ink[p] * Math.min(1, dist[p] / 3);
   }
-  h = blur(h, mask, W, H, 2, rim);
+  return blur(h, mask, W, H, 2, rim);
+}
+
+export function buildSculpt(a, opts = {}) {
+  const { W, H, pad, w0, h0, mask } = a;
+  const N = W * H;
+  const h = heightField(a, opts);
 
   // 1. Plane triangulation of the shape, oriented for the front (counter-clockwise from +z).
   //    Image y points down, so a front triangle has a negative signed area in image space.

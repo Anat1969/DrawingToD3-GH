@@ -201,9 +201,10 @@ export function createStage(container, { onFrame } = {}) {
   const clay = new THREE.MeshStandardMaterial({ color: 0xcfc4b2, roughness: 0.92, metalness: 0 });
   const inkLine = new THREE.LineBasicMaterial({ color: 0x17140f });
 
+  let backdrop = 'dark'; // 'paper' for line sculptures: a black line needs a light ground
   function applyMode(next) {
     mode = next;
-    const paper = mode === 'ink';
+    const paper = mode === 'ink' || backdrop === 'paper';
     scene.background.copy(paper ? PAPER : DARK);
     scene.fog.color.copy(paper ? PAPER : DARK);
     floor.material.opacity = paper ? 0.16 : 0.55;
@@ -229,6 +230,7 @@ export function createStage(container, { onFrame } = {}) {
           });
         }
         m.material = v.smoke;
+        if (m.name === 'line') { m.material = v.source; continue; } // a wire is already a line
         if (!v.edges) {
           v.edges = new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry, 28), inkLine);
           m.add(v.edges);
@@ -278,9 +280,23 @@ export function createStage(container, { onFrame } = {}) {
     }
   }
 
+  // A still of the stage for the archive card. Rendered and read in the same task,
+  // so it works without preserveDrawingBuffer.
+  function snapshot(side = 480) {
+    renderer.render(scene, camera);
+    const src = renderer.domElement;
+    const k = side / Math.max(src.width, src.height);
+    const c = document.createElement('canvas');
+    c.width = Math.round(src.width * k);
+    c.height = Math.round(src.height * k);
+    c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', 0.82);
+  }
+
   return {
-    setObject, loadUrl, clear, exportFile,
+    setObject, loadUrl, clear, exportFile, snapshot,
     setMode: applyMode,
+    setBackdrop(next) { backdrop = next; applyMode(mode); },
     setLight,
     setSpin(on) { controls.autoRotate = on; },
     get info() { return info; },
