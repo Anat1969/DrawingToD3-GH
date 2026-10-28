@@ -2,8 +2,23 @@
   "name": "drawing-to-3d",
   "version": "0.1.0",
   "private": true,
-  "description": "Hebrew RTL app: drawing to 3D model via Meshy, with in-browser GLB viewer.",
+  "description": "Hebrew RTL app: drawing to 3D model via Meshy, with a low-key Three.js stage.",
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "vite": "^6.4.5"
+  },
+  "dependencies": {
+    "three": "^0.170.0"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 4173",
+    "test": "node --test tests/api.test.js",
+    "test:e2e": "node tests/e2e.cjs",
+    "icons": "node scripts/make-icons.cjs"
   }
 }
