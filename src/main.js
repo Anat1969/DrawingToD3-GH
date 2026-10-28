@@ -18,7 +18,7 @@ const el = {
   status: $('status'), factSize: $('factSize'), factTris: $('factTris'), factSource: $('factSource'),
   downloads: $('downloads'), downloadsEmpty: $('downloadsEmpty'), openLocal: $('openLocalBtn'), localFile: $('localFile'),
   factClosed: $('factClosed'), volume: $('volume'), volumeVal: $('volumeVal'), lineRelief: $('lineRelief'), lineVal: $('lineVal'),
-  depth: $('depth'), depthVal: $('depthVal'), thickness: $('thickness'), thicknessVal: $('thicknessVal'), continuous: $('continuous'), smoke: $('smoke'),
+  depth: $('depth'), depthVal: $('depthVal'), thickness: $('thickness'), thicknessVal: $('thicknessVal'), continuous: $('continuous'), wrap: $('wrap'), wrapVal: $('wrapVal'), sensitivity: $('sensitivity'), sensitivityVal: $('sensitivityVal'), cloud: $('cloud'), cloudVal: $('cloudVal'),
   saveBox: $('saveBox'), workName: $('workName'), saveBtn: $('saveBtn'),
   service: $('service'), serviceText: $('serviceText'), serviceHint: $('serviceHint'),
   archiveList: $('archiveList'), archiveEmpty: $('archiveEmpty'),
@@ -64,7 +64,7 @@ function showSample() {
 let ann = null;
 function annText(info) {
   const [x, y, z] = info.proportion;
-  if (info.lines) return `<b>קווים:</b> <span dir="ltr">${info.lines}</span>${info.continuous ? ' · חוט אחד' : ''}<br><b>פרופורציה:</b> <span dir="ltr">${x} × ${y} × ${z}</span>`;
+  if (info.lines) return `<b>קווים:</b> <span dir="ltr">${info.lines}</span> · <b>ליפופים:</b> <span dir="ltr">${info.loops || 0}</span>${info.continuous ? ' · חוט אחד' : ''}<br><b>פרופורציה:</b> <span dir="ltr">${x} × ${y} × ${z}</span>`;
   return `<b>פרופורציה:</b> <span dir="ltr">${x} × ${y} × ${z}</span><br><b>משולשים:</b> <span dir="ltr">${info.tris.toLocaleString('he-IL')}</span>`;
 }
 function updateAnnotation(info) { if (ann) { ann.box.innerHTML = annText(info); ann.last = ''; } }
@@ -288,7 +288,7 @@ async function sculptNow() {
 
 function params() {
   return state.engine === 'line'
-    ? { depth: el.depth.value / 100, thickness: el.thickness.value / 100, continuous: el.continuous.checked, smoke: el.smoke.checked }
+    ? { depth: el.depth.value / 100, thickness: el.thickness.value / 100, wrap: el.wrap.value / 100, sensitivity: el.sensitivity.value / 100, cloud: el.cloud.value / 100, continuous: el.continuous.checked }
     : { volume: el.volume.value / 100, line: el.lineRelief.value / 100 };
 }
 
@@ -299,7 +299,9 @@ function setParams(p = {}) {
   set(el.volume, el.volumeVal, p.volume);
   set(el.lineRelief, el.lineVal, p.line);
   if (typeof p.continuous === 'boolean') el.continuous.checked = p.continuous;
-  if (typeof p.smoke === 'boolean') el.smoke.checked = p.smoke;
+  set(el.wrap, el.wrapVal, p.wrap);
+  set(el.sensitivity, el.sensitivityVal, p.sensitivity);
+  set(el.cloud, el.cloudVal, typeof p.smoke === 'boolean' ? (p.smoke ? 0.6 : 0) : p.cloud); // works saved before the cloud slider
 }
 
 function renderSculpt(keepView) {
@@ -307,7 +309,7 @@ function renderSculpt(keepView) {
   stage.setBackdrop(state.engine === 'line' ? 'paper' : 'dark');
   if (state.engine === 'line') {
     const r = lineSculpture(state.sculpt, params());
-    info = stage.setObject(r.object, { source: 'פיסול קווי', closed: r.closed, lines: r.lines, continuous: r.continuous }, { keepView });
+    info = stage.setObject(r.object, { source: 'פיסול קווי', closed: r.closed, lines: r.lines, loops: r.loops, continuous: r.continuous }, { keepView });
   } else {
     const { object, closed } = sculptMesh(state.sculpt, params());
     info = stage.setObject(object, { source: 'פיסול מקומי', closed }, { keepView });
@@ -324,11 +326,10 @@ function liveUpdate() {
   cancelAnimationFrame(sliderFrame);
   sliderFrame = requestAnimationFrame(() => renderSculpt(true));
 }
-for (const [input, out] of [[el.volume, el.volumeVal], [el.lineRelief, el.lineVal], [el.depth, el.depthVal], [el.thickness, el.thicknessVal]]) {
+for (const [input, out] of [[el.volume, el.volumeVal], [el.lineRelief, el.lineVal], [el.depth, el.depthVal], [el.thickness, el.thicknessVal], [el.wrap, el.wrapVal], [el.sensitivity, el.sensitivityVal], [el.cloud, el.cloudVal]]) {
   input.addEventListener('input', () => { out.textContent = input.value; liveUpdate(); });
 }
 el.continuous.addEventListener('change', liveUpdate);
-el.smoke.addEventListener('change', liveUpdate);
 
 /* ---------------- Saving to the archive ---------------- */
 async function saveWork() {

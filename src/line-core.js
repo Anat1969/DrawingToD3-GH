@@ -7,17 +7,26 @@
 // Skeleton: Zhang & Suen thinning (Communications of the ACM, 1984).
 // Simplification: Ramer-Douglas-Peucker. Smoothing: Chaikin corner cutting.
 
-export const LINE_DEFAULTS = { depth: 0.5, thickness: 0.35, continuous: true };
-// The connecting thread is finer than the drawn line, so the drawing still reads from the front.
+export const LINE_DEFAULTS = { depth: 0.5, thickness: 0.35, continuous: true, sensitivity: 0.6, wrap: 0.35, cloud: 0.6 };
+// The connecting thread and the wrapping are finer than the drawn line, so the drawing still reads.
 const CONNECTOR = 0.4;
+const WRAP = 0.5;
+
+/** How far the surface is pushed out of the drawing plane, from the depth slider. */
+export const depthScale = (depth) => 0.25 + 1.75 * clamp01(depth ?? LINE_DEFAULTS.depth);
 
 /**
  * Find the drawn strokes as polylines in image pixels.
  * @param {{width:number,height:number,data:Uint8ClampedArray}} img RGBA, ~400 px
  * @returns {Array<Array<[number, number]>>}
  */
-export function extractStrokes(img) {
+export function extractStrokes(img, opts = {}) {
   const W = img.width, H = img.height, src = img.data, N = W * H;
+  // Sensitivity: higher finds fainter and shorter lines (and more noise).
+  const sens = clamp01(opts.sensitivity ?? LINE_DEFAULTS.sensitivity);
+  const darkness = 0.62 - 0.42 * sens;          // 0.62 .. 0.20 darker than the paper
+  const minBlob = Math.round(14 - 11 * sens);   // 14 .. 3 pixels
+  const minLength = 16 - 13 * sens;             // 16 .. 3 pixels
 
   // Background: median of the border. Ink: clearly darker than the paper.
   const br = [], bgc = [], bb = [];
@@ -31,20 +40,20 @@ export function extractStrokes(img) {
   for (let p = 0; p < N; p++) {
     const i = p * 4;
     const lum = 0.299 * src[i] + 0.587 * src[i + 1] + 0.114 * src[i + 2];
-    if (bgLum > 1 && (bgLum - lum) / bgLum > 0.42) ink[p] = 1;
+    if (bgLum > 1 && (bgLum - lum) / bgLum > darkness) ink[p] = 1;
   }
   for (let x = 0; x < W; x++) { ink[x] = 0; ink[(H - 1) * W + x] = 0; }
   for (let y = 0; y < H; y++) { ink[y * W] = 0; ink[y * W + W - 1] = 0; }
 
-  ink = removeSmall(ink, W, H, 10);
+  ink = removeSmall(ink, W, H, minBlob);
   const skel = thin(ink, W, H);
   let lines = trace(skel, W, H);
-  lines = pruneSpurs(lines);
-  lines = mergeTouching(lines);
+  lines = pruneSpurs(lines, W, H);
+  lines = mergeTouching(lines, W, H);
   return lines
-    .filter((l) => l.length >= 5)
-    .map((l) => rdp(l, 0.9))
-    .filter((l) => l.length >= 2 && pathLength(l) >= 10);
+    .filter((l) => l.length >= 3)
+    .map((l) => rdp(l, 0.8))
+    .filter((l) => l.length >= 2 && pathLength(l) >= minLength);
 }
 
 /**
@@ -56,9 +65,9 @@ export function extractStrokes(img) {
  * @returns {Array<Array<[number,number,number]>>} 3D paths (one when continuous)
  */
 export function liftStrokes(strokes, map, heightAt, toWorld, opts = {}) {
-  const depth = clamp01(opts.depth ?? LINE_DEFAULTS.depth);
   const continuous = opts.continuous ?? LINE_DEFAULTS.continuous;
-  const k = 0.25 + 1.75 * depth;
+  const k = depthScale(opts.depth);
+  const extra = opts.extra || []; // already 3D paths, e.g. the wrapping loops
   let zmax = 0;
 
   const lifted = strokes.map((l) => l.map(([x, y]) => {
@@ -68,10 +77,12 @@ export function liftStrokes(strokes, map, heightAt, toWorld, opts = {}) {
     if (z > zmax) zmax = z;
     return [X, Y, z, 1];
   }));
-  if (!continuous || lifted.length < 2) return lifted.map((p) => chaikin(p, 2));
+  for (const e of extra) for (const p of e) if (p[2] > zmax) zmax = p[2];
+  const all = lifted.concat(extra);
+  if (!continuous || all.length < 2) return all.map((p) => chaikin(p, 2));
 
   // Greedy chain: always continue to the nearest free stroke end, reversing it if needed.
-  const left = lifted.slice();
+  const left = all.slice();
   const order = [left.shift()];
   while (left.length) {
     const tail = order[order.length - 1].at(-1);
@@ -103,15 +114,63 @@ export function liftStrokes(strokes, map, heightAt, toWorld, opts = {}) {
     }
     for (const p of s) path.push(p);
   });
-  return [chaikin(path, 2)];
+  return [chaikin(path, path.length > 4000 ? 1 : 2)];
+}
+
+/**
+ * Wrapping: loops that run across the front of the body, over the rim and back across the
+ * back, at many angles, like yarn wound around a form. They give the line sculpture its volume.
+ * @param a      { mask, W, H } of the analysed silhouette (grid pixels)
+ * @param zAt    (gx, gy) => surface depth in world units (>= 0)
+ * @param toW    (gx, gy) => [x, y] world coords
+ * @returns {Array<Array<[x,y,z,w]>>}
+ */
+export function wrapLoops(a, zAt, toW, opts = {}) {
+  const amount = clamp01(opts.wrap ?? LINE_DEFAULTS.wrap);
+  const count = Math.round(amount * 64);
+  const lift = opts.lift || 0;
+  if (!count) return [];
+  const { mask, W, H } = a;
+  let cx = 0, cy = 0, n = 0;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (mask[y * W + x]) { cx += x; cy += y; n++; }
+  if (!n) return [];
+  cx /= n; cy /= n;
+  const inside = (x, y) => { const xi = Math.round(x), yi = Math.round(y); return xi >= 0 && yi >= 0 && xi < W && yi < H && mask[yi * W + xi] === 1; };
+  const reach = Math.hypot(W, H);
+  const loops = [];
+  for (let i = 0; i < count; i++) {
+    // Angles and offsets from low-discrepancy sequences: even coverage, no visible pattern.
+    const theta = ((i * 0.6180339887) % 1) * Math.PI;
+    const dx = Math.cos(theta), dy = Math.sin(theta), nxv = -dy, nyv = dx;
+    let lo = Infinity, hi = -Infinity;
+    for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2) if (mask[y * W + x]) {
+      const t = (x - cx) * nxv + (y - cy) * nyv;
+      if (t < lo) lo = t; if (t > hi) hi = t;
+    }
+    const off = lo + (hi - lo) * (0.06 + 0.88 * ((i * 0.7548776662 + 0.31) % 1));
+    // Longest run of the line inside the shape.
+    let best = null, run = null;
+    for (let sPos = -reach; sPos <= reach; sPos += 1.5) {
+      const x = cx + nxv * off + dx * sPos, y = cy + nyv * off + dy * sPos;
+      if (inside(x, y)) { if (!run) run = []; run.push([x, y]); }
+      else if (run) { if (!best || run.length > best.length) best = run; run = null; }
+    }
+    if (run && (!best || run.length > best.length)) best = run;
+    if (!best || best.length < 5) continue;
+    const front = best.map(([x, y]) => { const [X, Y] = toW(x, y); return [X, Y, zAt(x, y) + lift, WRAP]; });
+    const back = best.slice().reverse().map(([x, y]) => { const [X, Y] = toW(x, y); return [X, Y, -zAt(x, y) - lift, WRAP]; });
+    loops.push(front.concat(back, [front[0]]));
+  }
+  return loops;
 }
 
 /**
  * Closed tube around each path (end caps included), as one indexed mesh. Printable as wire.
- * @returns {{positions:Float32Array, indices:Uint32Array, triangles:number, length:number}}
+ * @returns {{positions:Float32Array, indices:Uint32Array, weight:Float32Array, triangles:number, length:number}}
+ * weight per vertex: 1 on drawn strokes, lower on wrapping and connecting thread.
  */
 export function tubeMesh(paths, radius, radial = 8) {
-  const pos = [], idx = [];
+  const pos = [], idx = [], wt = [];
   let total = 0;
   for (const raw of paths) {
     const P = dedupe(raw);
@@ -131,6 +190,7 @@ export function tubeMesh(paths, radius, radial = 8) {
         const r = radius * (P[i][3] ?? 1);
         const a = (j / radial) * Math.PI * 2, c = Math.cos(a) * r, s = Math.sin(a) * r;
         pos.push(P[i][0] + Nv[0] * c + B[0] * s, P[i][1] + Nv[1] * c + B[1] * s, P[i][2] + Nv[2] * c + B[2] * s);
+        wt.push(P[i][3] ?? 1);
       }
     }
     const ring = (i, j) => base + i * radial + (j % radial);
@@ -138,14 +198,14 @@ export function tubeMesh(paths, radius, radial = 8) {
       const a = ring(i, j), b = ring(i, j + 1), c = ring(i + 1, j), d = ring(i + 1, j + 1);
       idx.push(a, b, c, b, d, c);
     }
-    const s0 = pos.length / 3; pos.push(P[0][0], P[0][1], P[0][2]);
-    const s1 = pos.length / 3; pos.push(P[n - 1][0], P[n - 1][1], P[n - 1][2]);
+    const s0 = pos.length / 3; pos.push(P[0][0], P[0][1], P[0][2]); wt.push(P[0][3] ?? 1);
+    const s1 = pos.length / 3; pos.push(P[n - 1][0], P[n - 1][1], P[n - 1][2]); wt.push(P[n - 1][3] ?? 1);
     for (let j = 0; j < radial; j++) {
       idx.push(s0, ring(0, j + 1), ring(0, j));
       idx.push(s1, ring(n - 1, j), ring(n - 1, j + 1));
     }
   }
-  return { positions: new Float32Array(pos), indices: new Uint32Array(idx), triangles: idx.length / 3, length: total };
+  return { positions: new Float32Array(pos), indices: new Uint32Array(idx), weight: new Float32Array(wt), triangles: idx.length / 3, length: total };
 }
 
 /* ---------- skeleton and tracing ---------- */
@@ -212,42 +272,77 @@ function trace(s, W, H) {
 }
 
 // Short side branches of the skeleton (from line thickness, not from the drawing) are removed.
-function pruneSpurs(lines) {
-  const ends = (l) => [l[0], l.at(-1)];
-  return lines.filter((l, i) => {
-    if (pathLength(l) >= 7) return true;
-    const touching = ends(l).filter((e) => lines.some((o, j) => j !== i && o.some((q) => dist3(e, q) <= 1.5)));
-    return touching.length === 0; // keep an isolated short mark, drop a spur
-  });
+function pruneSpurs(lines, W, H) {
+  const owner = new Int32Array(W * H).fill(-1);
+  lines.forEach((l, i) => { for (const [x, y] of l) owner[y * W + x] = i; });
+  const touchesOther = (e, i) => {
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const x = e[0] + dx, y = e[1] + dy;
+      if (x < 0 || y < 0 || x >= W || y >= H) continue;
+      const o = owner[y * W + x];
+      if (o >= 0 && o !== i) return true;
+    }
+    return false;
+  };
+  return lines.filter((l, i) => pathLength(l) >= 7 || !(touchesOther(l[0], i) || touchesOther(l.at(-1), i)));
 }
 
 // Strokes cut at skeleton junctions are joined again where they continue in the same direction.
-function mergeTouching(input) {
-  const lines = input.map((l) => l.slice());
+// Candidate end pairs come from a grid, best continuations are linked first (no cycles).
+function mergeTouching(lines, W, H) {
+  const R = 3.5, cell = 4;
   const dir = (l, atEnd) => {
     const a = atEnd ? l.at(-1) : l[0], b = atEnd ? l[Math.max(0, l.length - 5)] : l[Math.min(l.length - 1, 4)];
     const d = [a[0] - b[0], a[1] - b[1]], n = Math.hypot(...d) || 1;
-    return [d[0] / n, d[1] / n]; // pointing out of the stroke
+    return [d[0] / n, d[1] / n];
   };
-  for (let guard = 0; guard < 2000; guard++) {
-    let best = null;
-    for (let i = 0; i < lines.length; i++) for (let j = i + 1; j < lines.length; j++) {
-      for (const ei of [false, true]) for (const ej of [false, true]) {
-        const pi = ei ? lines[i].at(-1) : lines[i][0], pj = ej ? lines[j].at(-1) : lines[j][0];
-        if (dist3(pi, pj) > 3.5) continue;
-        const di = dir(lines[i], ei), dj = dir(lines[j], ej);
-        const straight = -(di[0] * dj[0] + di[1] * dj[1]); // 1 when the two continue each other
-        if (straight < 0.3) continue;
-        if (!best || straight > best.straight) best = { i, j, ei, ej, straight };
-      }
+  const ends = [];
+  lines.forEach((l, i) => { ends.push({ i, atEnd: false, p: l[0], d: dir(l, false) }, { i, atEnd: true, p: l.at(-1), d: dir(l, true) }); });
+  const grid = new Map();
+  ends.forEach((e, k) => { const key = Math.floor(e.p[0] / cell) + ',' + Math.floor(e.p[1] / cell); (grid.get(key) || grid.set(key, []).get(key)).push(k); });
+  const pairs = [];
+  ends.forEach((e, k) => {
+    const gx = Math.floor(e.p[0] / cell), gy = Math.floor(e.p[1] / cell);
+    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) for (const m of grid.get((gx + a) + ',' + (gy + b)) || []) {
+      if (m <= k) continue;
+      const f = ends[m];
+      if (f.i === e.i || dist3(e.p, f.p) > R) continue;
+      const straight = -(e.d[0] * f.d[0] + e.d[1] * f.d[1]);
+      if (straight >= 0.3) pairs.push([straight, k, m]);
     }
-    if (!best) break;
-    const a = best.ei ? lines[best.i] : lines[best.i].slice().reverse();
-    const b = best.ej ? lines[best.j].slice().reverse() : lines[best.j];
-    lines[best.i] = a.concat(b);
-    lines.splice(best.j, 1);
+  });
+  pairs.sort((x, y) => y[0] - x[0]);
+  const link = new Int32Array(ends.length).fill(-1);
+  const parent = lines.map((_, i) => i);
+  const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+  for (const [, k, m] of pairs) {
+    if (link[k] >= 0 || link[m] >= 0) continue;
+    const ra = find(ends[k].i), rb = find(ends[m].i);
+    if (ra === rb) continue;
+    link[k] = m; link[m] = k; parent[ra] = rb;
   }
-  return lines;
+  // Walk the chains: start at a line end that is not linked.
+  const seen = new Uint8Array(lines.length);
+  const out = [];
+  const walkFrom = (i, enterAtEnd) => {
+    let chain = [];
+    let cur = i, fromEnd = enterAtEnd;
+    while (cur >= 0 && !seen[cur]) {
+      seen[cur] = 1;
+      const l = fromEnd ? lines[cur].slice().reverse() : lines[cur];
+      chain = chain.concat(chain.length ? l.slice(1) : l);
+      const exitK = 2 * cur + (fromEnd ? 0 : 1); // the far end we leave through
+      const nk = link[exitK];
+      if (nk < 0) break;
+      cur = ends[nk].i;
+      fromEnd = ends[nk].atEnd;
+    }
+    return chain;
+  };
+  lines.forEach((_, i) => { if (!seen[i] && link[2 * i] < 0) out.push(walkFrom(i, false)); });
+  lines.forEach((_, i) => { if (!seen[i] && link[2 * i + 1] < 0) out.push(walkFrom(i, true)); });
+  lines.forEach((_, i) => { if (!seen[i]) out.push(walkFrom(i, false)); });
+  return out.filter((c) => c.length);
 }
 
 function removeSmall(m, W, H, min) {

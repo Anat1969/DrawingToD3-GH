@@ -76,3 +76,47 @@ test('tube: thread of strokes and thinner connectors has only finite positions',
   assert.ok(Math.max(...m.indices) < m.positions.length / 3, 'every index points at a real vertex');
   assert.ok(isClosed(m.indices));
 });
+
+import { wrapLoops, depthScale } from '../src/line-core.js';
+
+test('sensitivity: a faint grey line is found only when sensitivity is high', () => {
+  const faint = canvas(200, 120, (x, y) => {
+    if (Math.abs(y - 40) < 1.6 && x > 20 && x < 180) return INK;          // strong line
+    if (Math.abs(y - 85) < 1 && x > 20 && x < 180) return [150, 148, 144]; // faint pencil line
+    return null;
+  });
+  const low = extractStrokes(faint, { sensitivity: 0.1 });
+  const high = extractStrokes(faint, { sensitivity: 0.9 });
+  const hasFaint = (s) => s.some((l) => l.every(([, y]) => Math.abs(y - 85) < 3));
+  assert.ok(!hasFaint(low), 'low sensitivity ignores the faint line');
+  assert.ok(hasFaint(high), 'high sensitivity finds the faint line');
+});
+
+test('wrap: loops cross the front, pass the rim and return across the back', () => {
+  const W = 80, H = 60, mask = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (((x - 40) / 30) ** 2 + ((y - 30) / 22) ** 2 < 1) mask[y * W + x] = 1;
+  const zAt = (x, y) => Math.max(0, 1 - ((x - 40) / 30) ** 2 - ((y - 30) / 22) ** 2) * 0.3;
+  const toW = (x, y) => [x / 40 - 1, 1 - y / 30];
+  assert.equal(wrapLoops({ mask, W, H }, zAt, toW, { wrap: 0 }).length, 0, 'no wrapping at 0');
+  const loops = wrapLoops({ mask, W, H }, zAt, toW, { wrap: 0.5 });
+  assert.ok(loops.length >= 25, `${loops.length} loops`);
+  for (const l of loops) {
+    assert.ok(l.some((p) => p[2] > 0.05) && l.some((p) => p[2] < -0.05), 'goes in front and behind');
+    assert.deepEqual(l[0], l.at(-1), 'closed loop');
+  }
+  const angles = new Set(loops.map((l) => Math.round(Math.atan2(l[3][1] - l[0][1], l[3][0] - l[0][0]) * 4)));
+  assert.ok(angles.size > 6, 'many directions, like wound yarn');
+  assert.ok(depthScale(1) > depthScale(0));
+});
+
+test('wrap: strokes plus wrapping make one closed printable thread', () => {
+  const W = 80, H = 60, mask = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (((x - 40) / 30) ** 2 + ((y - 30) / 22) ** 2 < 1) mask[y * W + x] = 1;
+  const loops = wrapLoops({ mask, W, H }, () => 0.2, (x, y) => [x / 40 - 1, 1 - y / 30], { wrap: 0.3 });
+  const s = extractStrokes(drawing);
+  const paths = liftStrokes(s, { sw: 200, sh: 160 }, () => 0.15, (u, v) => [u * 2 - 1, 1 - v * 2], { continuous: true, extra: loops });
+  assert.equal(paths.length, 1);
+  const m = tubeMesh(paths, 0.01, 8);
+  assert.ok(isClosed(m.indices));
+  assert.equal(m.positions.length % 3, 0);
+});

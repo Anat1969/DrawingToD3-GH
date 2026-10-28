@@ -87,7 +87,7 @@
 
             <fieldset class="option engine">
               <legend class="legend"><b>מנוע:</b> איך הציור יהפוך לגוף</legend>
-              <label><input type="radio" name="engine" value="line" checked> <span><b>קו במרחב</b> הקו השחור כחוט רציף שמתלפף סביב הצורה. חינם, במכשיר.</span></label>
+              <label><input type="radio" name="engine" value="line" checked> <span><b>קו במרחב</b> הקו השחור כחוט רציף שמתלפף סביב הנפח, והצבע כענן. חינם, במכשיר.</span></label>
               <label><input type="radio" name="engine" value="local"> <span><b>גוף מנופח</b> הצורה כגוף מעוגל וסגור. חינם, במכשיר.</span></label>
               <label><input type="radio" name="engine" value="ai"> <span><b>בינה מלאכותית</b> Meshy משלים גם את הצד האחורי. דורש מפתח בתשלום.</span></label>
             </fieldset>
@@ -103,8 +103,22 @@
                 <input type="range" id="thickness" min="0" max="100" value="35">
                 <output id="thicknessVal" dir="ltr">35</output>
               </label>
-              <label class="check"><input type="checkbox" id="continuous" checked> <span><b>חוט אחד</b> הקווים מתחברים וממשיכים מאחורי הצורה</span></label>
-              <label class="check"><input type="checkbox" id="smoke" checked> <span><b>עשן צבע</b> כתמי הצבע כענן שקוף בתוך החלל</span></label>
+              <label class="slider">
+                <span><b>ליפוף:</b> החוט מתלפף סביב הנפח</span>
+                <input type="range" id="wrap" min="0" max="100" value="35">
+                <output id="wrapVal" dir="ltr">35</output>
+              </label>
+              <label class="slider">
+                <span><b>רגישות לקו:</b> גם קווים דקים וקצרים</span>
+                <input type="range" id="sensitivity" min="0" max="100" value="60">
+                <output id="sensitivityVal" dir="ltr">60</output>
+              </label>
+              <label class="slider">
+                <span><b>ענן צבע:</b> כתמי הצבע כריסוס שקוף</span>
+                <input type="range" id="cloud" min="0" max="100" value="60">
+                <output id="cloudVal" dir="ltr">60</output>
+              </label>
+              <label class="check"><input type="checkbox" id="continuous" checked> <span><b>חוט אחד</b> הקווים והליפוף מתחברים לחוט רציף</span></label>
             </div>
 
             <div class="engine-panel" data-engine-panel="local" hidden>
@@ -193,7 +207,7 @@
         <li><b>קו:</b> סגור<p>קו מתאר רציף עוזר להבין איפה הגוף נגמר. כתמי צבע פתוחים הופכים למרקם.</p></li>
         <li><b>זווית:</b> שלושה רבעים<p>מבט מעט מהצד נותן למחולל מידע על העומק. חזית שטוחה נותנת גוף שטוח.</p></li>
         <li><b>בדיקה:</b> חימר וקו<p>אחרי ההמרה עוברים למצב "חימר" כדי לשפוט צורה בלי צבע, ולמצב "קו" כדי לראות את המבנה.</p></li>
-        <li><b>קו במרחב:</b> חוט<p>מוצאים את מרכז כל קו שחור (שלד בשיטת Zhang-Suen, 1984), עוקבים אחריו לקו רציף, ונותנים לו עומק: קו מתאר יושב על שפת הצורה, קו פנימי על פני הצורה. הקווים מתחברים לחוט אחד שעובר מאחורי הצורה, כמו כדור צמר. כתמי הצבע נשארים כעשן שקוף בתוך החלל.</p></li>
+        <li><b>קו במרחב:</b> חוט<p>מוצאים את מרכז כל קו שחור (שלד בשיטת Zhang-Suen, 1984), עוקבים אחריו לקו רציף, ונותנים לו עומק: קו מתאר יושב על שפת הצורה, קו פנימי על פני הצורה. לולאות ליפוף עוברות על פני הצורה מלפנים, חוצות את השפה וחוזרות מאחור בזוויות שונות, כמו צמר שמלופף סביב גוף, והן יוצרות את הנפח. הכול מתחבר לחוט אחד. כתמי הצבע הם ריסוס רך בשקיפויות שונות בתוך החלל.</p></li>
         <li><b>גוף מנופח:</b> ניפוח<p>שיטת הניפוח של Teddy (Igarashi, 1999) ו-Monster Mash (2020): מזהים את קו המתאר, ממלאים את השטח הסגור, והמרחק מהקו הופך לגובה. הקו השחור בולט כנפח. התוצאה תבליט עגול דו-צדדי, לא ניחוש של הצד האחורי.</p></li>
         <li><b>בקרת איכות:</b> גוף סגור<p>אחרי כל פיסול נבדק שכל צלע משותפת לשני משולשים בדיוק. זה התנאי של תוכנות הדפסה לגוף אטום, והתוצאה מוצגת בשורה "גוף סגור להדפסה".</p></li>
         <li><b>הדפסה:</b> STL או 3MF<p>לפני הדפסה פותחים את הקובץ בתוכנת הפריסה ובודקים שהגוף סגור ובקנה המידה הנכון.</p></li>
