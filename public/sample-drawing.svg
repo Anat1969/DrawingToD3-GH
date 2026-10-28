@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1000" viewBox="0 0 1200 1000">
+  <rect width="1200" height="1000" fill="#fbf9f4"/>
+  <defs>
+    <filter id="wash" x="-20%" y="-20%" width="140%" height="140%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.02" numOctaves="3" seed="4"/>
+      <feDisplacementMap in="SourceGraphic" scale="22"/>
+      <feGaussianBlur stdDeviation="2"/>
+    </filter>
+    <filter id="pen"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="1" seed="2"/><feDisplacementMap in="SourceGraphic" scale="2.2"/></filter>
+  </defs>
+  <!-- Watercolour washes: colour as smoke -->
+  <g filter="url(#wash)" opacity="0.55">
+    <path d="M330 520 L620 620 L620 860 L330 760 Z" fill="#d9c7a3"/>
+    <path d="M620 620 L900 520 L900 760 L620 860 Z" fill="#b7a586"/>
+    <path d="M300 520 L470 300 L650 630 L330 520 Z" fill="#7d7a5c"/>
+    <path d="M470 300 L760 220 L930 510 L650 630 Z" fill="#8f8a68"/>
+    <path d="M700 690 L790 660 L790 740 L700 770 Z" fill="#e8b26a"/>
+  </g>
+  <!-- Ink lines: line as volume -->
+  <g filter="url(#pen)" fill="none" stroke="#1a1712" stroke-linecap="round" stroke-linejoin="round">
+    <g stroke-width="5">
+      <path d="M330 520 L620 620 L900 520"/>
+      <path d="M330 520 L330 760 L620 860 L900 760 L900 520"/>
+      <path d="M620 620 L620 860"/>
+      <path d="M300 528 L470 300 L650 632"/>
+      <path d="M470 300 L760 220 L932 512"/>
+      <path d="M650 632 L932 512"/>
+      <path d="M770 300 L770 200 L820 186 L820 286"/>
+    </g>
+    <g stroke-width="3.5">
+      <path d="M400 790 L400 640 L470 664 L470 814"/>
+      <path d="M700 690 L790 660 L790 740 L700 770 Z"/>
+      <path d="M745 675 L745 755"/>
+    </g>
+    <g stroke-width="2" opacity="0.6">
+      <path d="M250 880 Q600 960 980 840"/>
+      <path d="M340 540 L340 750 M360 548 L360 757" />
+    </g>
+  </g>
+</svg>

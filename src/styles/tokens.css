@@ -1,0 +1,32 @@
+/* Darkroom design tokens. Source of truth: .claude/skills/darkroom-design-language/SKILL.md */
+:root {
+  --ink-0: #0c0b09;
+  --ink-1: #14120f;
+  --ink-2: #1c1915;
+  --ink-3: #26221c;
+  --line: rgba(236, 228, 214, 0.14);
+  --line-strong: rgba(236, 228, 214, 0.28);
+  --paper: #ece6da;
+  --muted: #a59d8e;
+  --faint: #7d7668;
+  --window: #e8b26a;
+  --window-deep: #b8803f;
+  --window-glow: rgba(232, 178, 106, 0.18);
+  --olive: #6f6a52;
+  --haze: #3b3f45;
+  --danger: #e58f7b;
+  --ok: #a9c49a;
+
+  --sans: "IBM Plex Sans Hebrew", "Heebo", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --slow: 800ms;
+  --mid: 320ms;
+
+  --gutter: max(16px, env(safe-area-inset-left, 0px));
+  --gutter-r: max(16px, env(safe-area-inset-right, 0px));
+  --max: 1280px;
+
+  color-scheme: dark;
+}
