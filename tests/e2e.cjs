@@ -106,6 +106,21 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
   ok(!/חוט אחד/.test(await page.locator('.ann-label').innerText()), 'continuous thread can be switched off');
   await page.click('#continuous');
   await page.waitForTimeout(300);
+  ok(/ליפופים:\s*\d+/.test(await page.locator('.ann-label').innerText()), 'annotation reports wrapping loops');
+  await page.locator('#wrap').fill('0');
+  await page.waitForTimeout(400);
+  ok(/ליפופים:\s*0/.test(await page.locator('.ann-label').innerText()), 'wrap at 0 removes the wrapping');
+  await page.locator('#wrap').fill('60');
+  await page.waitForTimeout(400);
+  const loops = Number(((await page.locator('.ann-label').innerText()).match(/ליפופים:\s*(\d+)/) || [])[1]);
+  ok(loops >= 30, `wrap winds the thread around the volume (${loops} loops)`);
+  ok(await page.locator('#factClosed').innerText() === 'כן', 'wrapped thread is still a closed body');
+  await page.locator('#sensitivity').fill('95');
+  await page.waitForTimeout(600);
+  ok(await page.locator('#sensitivityVal').innerText() === '95', 'line sensitivity slider works');
+  await page.locator('#cloud').fill('90');
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: path.join(OUT, '03a2-wrap-cloud.png') });
 
   // Save to the archive
   ok(await page.locator('#saveBox').isVisible(), 'save appears once there is a sculpture');
@@ -148,7 +163,7 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
   await page.reload();
   const reopened = await page.waitForFunction(() => document.querySelector('#factSource').textContent === 'פיסול קווי', null, { timeout: 15000 }).then(() => true, () => false);
   ok(reopened, 'saved work reopens as a line sculpture after reload');
-  ok(await page.locator('#depth').inputValue() === '100' && await page.locator('#thickness').inputValue() === '80', 'saved settings come back');
+  ok(await page.locator('#depth').inputValue() === '100' && await page.locator('#thickness').inputValue() === '80' && await page.locator('#wrap').inputValue() === '60' && await page.locator('#cloud').inputValue() === '90', 'saved settings come back');
   ok(await page.locator('#workName').inputValue() === 'בית בקו', 'saved name comes back');
   await page.click('#resetBtn');
   await page.goto(BASE + '/#/');

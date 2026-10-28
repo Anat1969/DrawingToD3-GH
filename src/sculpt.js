@@ -2,11 +2,11 @@
 // either the inflated body or the line sculpture with Three.js.
 import * as THREE from 'three';
 import { analysePixels, buildSculpt, heightField, isClosed, DEFAULTS } from './sculpt-core.js';
-import { extractStrokes, liftStrokes, tubeMesh, LINE_DEFAULTS } from './line-core.js';
+import { extractStrokes, liftStrokes, tubeMesh, wrapLoops, depthScale, LINE_DEFAULTS } from './line-core.js';
 
 export { DEFAULTS, LINE_DEFAULTS };
 const GRID = 200;      // body analysis resolution (longest side)
-const STROKES = 420;   // stroke analysis resolution (longest side)
+const STROKES = 560;   // stroke analysis resolution (longest side): enough for fine lines
 const TEXTURE = 1024;  // texture resolution (longest side)
 
 function loadImage(src) {
@@ -37,11 +37,18 @@ export async function prepareSculpt(src) {
   const pixels = small.getContext('2d').getImageData(0, 0, small.width, small.height);
   const analysis = analysePixels(pixels);
   const strokeCanvas = draw(img, STROKES);
-  const strokes = extractStrokes(strokeCanvas.getContext('2d').getImageData(0, 0, strokeCanvas.width, strokeCanvas.height));
+  const strokeImage = strokeCanvas.getContext('2d').getImageData(0, 0, strokeCanvas.width, strokeCanvas.height);
   const texture = new THREE.CanvasTexture(draw(img, TEXTURE));
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
-  return { analysis, pixels, strokes, strokeSize: { sw: strokeCanvas.width, sh: strokeCanvas.height }, texture };
+  return { analysis, pixels, strokeImage, strokeCache: new Map(), strokeSize: { sw: strokeCanvas.width, sh: strokeCanvas.height }, texture };
+}
+
+/** Strokes for a sensitivity, cached: moving other sliders does not re-trace the drawing. */
+function strokesFor(prepared, sensitivity) {
+  const key = Math.round((sensitivity ?? LINE_DEFAULTS.sensitivity) * 20);
+  if (!prepared.strokeCache.has(key)) prepared.strokeCache.set(key, extractStrokes(prepared.strokeImage, { sensitivity: key / 20 }));
+  return prepared.strokeCache.get(key);
 }
 
 /** Inflated closed body. */
@@ -74,9 +81,17 @@ export function lineSculpture(prepared, opts) {
   const heightAt = (u, v) => sample(...gxy(u, v)) * unit;
   const toWorld = (u, v) => [(u * (w0 - 1) - w0 / 2) * unit, (h0 / 2 - v * (h0 - 1)) * unit];
 
-  const paths = liftStrokes(prepared.strokes, prepared.strokeSize, heightAt, toWorld, opts);
+  const strokes = strokesFor(prepared, opts.sensitivity);
   const thickness = Math.max(0, Math.min(1, opts.thickness ?? LINE_DEFAULTS.thickness));
   const radius = 0.004 + 0.02 * thickness;
+
+  // Wrapping loops lie on the same surface as the strokes (same depth scale), just outside it.
+  const k = depthScale(opts.depth);
+  const zGrid = (gx, gy) => sample(gx, gy) * unit * k;
+  const toWGrid = (gx, gy) => [(gx - pad - w0 / 2) * unit, (h0 / 2 - (gy - pad)) * unit];
+  const loops = wrapLoops(a, zGrid, toWGrid, { wrap: opts.wrap, lift: radius * 0.6 });
+
+  const paths = liftStrokes(strokes, prepared.strokeSize, heightAt, toWorld, { ...opts, extra: loops });
   const tube = tubeMesh(paths, radius, 8);
   if (!tube.triangles) throw Object.assign(new Error('no_lines'), { code: 'no_lines' });
 
@@ -84,60 +99,92 @@ export function lineSculpture(prepared, opts) {
   g.setAttribute('position', new THREE.BufferAttribute(tube.positions, 3));
   g.setIndex(new THREE.BufferAttribute(tube.indices, 1));
   g.computeVertexNormals();
-  const wire = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0x1d1913, roughness: 0.36, metalness: 0.45 }));
+  // Drawn line in near-black ink; wrapping and connecting thread in warm graphite, so the
+  // drawing stays the subject and the yarn builds the volume around it.
+  const ink = new THREE.Color(0x1a1611), yarn = new THREE.Color(0x8a7f6c), col = new Float32Array(tube.weight.length * 3);
+  const tmp = new THREE.Color();
+  tube.weight.forEach((w, i) => { tmp.copy(yarn).lerp(ink, Math.max(0, Math.min(1, (w - 0.5) / 0.5))); col.set([tmp.r, tmp.g, tmp.b], i * 3); });
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const wire = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.42, metalness: 0.3 }));
   wire.name = 'line';
 
   const group = new THREE.Group();
   group.add(wire);
-  if (opts.smoke !== false) {
-    const smoke = colourSmoke(prepared, heightAt, toWorld, unit);
-    if (smoke) group.add(smoke);
+  const cloud = opts.cloud === true ? 0.6 : opts.cloud === false ? 0 : (opts.cloud ?? LINE_DEFAULTS.cloud);
+  if (cloud > 0) {
+    const c = colourCloud(prepared, sample, unit * k, gxy, toWorld, cloud);
+    if (c) group.add(c);
   }
-  return { object: group, closed: isClosed(tube.indices), lines: prepared.strokes.length, continuous: paths.length === 1 && prepared.strokes.length > 1 };
+  return { object: group, closed: isClosed(tube.indices), lines: strokes.length, loops: loops.length, continuous: paths.length === 1 && strokes.length + loops.length > 1 };
 }
 
-let sprite = null;
-function softSprite() {
-  if (sprite) return sprite;
-  const c = document.createElement('canvas');
-  c.width = c.height = 64;
-  const g = c.getContext('2d');
-  const r = g.createRadialGradient(32, 32, 0, 32, 32, 32);
-  r.addColorStop(0, 'rgba(255,255,255,1)');
-  r.addColorStop(0.45, 'rgba(255,255,255,0.35)');
-  r.addColorStop(1, 'rgba(255,255,255,0)');
-  g.fillStyle = r;
-  g.fillRect(0, 0, 64, 64);
-  sprite = new THREE.CanvasTexture(c);
-  return sprite;
-}
-
-// Colour washes become a translucent cloud inside the volume the drawing describes.
-function colourSmoke(prepared, heightAt, toWorld, unit) {
-  const { pixels } = prepared;
-  const { width: w, height: hh, data } = pixels;
-  const pos = [], col = [];
-  let seed = 12345;
+// Colour as sprayed pigment in the air: soft round puffs of different sizes and transparencies,
+// coloured by the local average of the wash, spread through the depth of the body.
+function colourCloud(prepared, sample, zScale, gxy, toWorld, amount) {
+  const { width: w, height: hh, data } = prepared.pixels;
+  // Local average colour (5x5) of the coloured pixels: a wash, not a speckle.
+  const avg = (x, y) => {
+    let r = 0, g = 0, b = 0, n = 0;
+    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+      const xx = Math.min(w - 1, Math.max(0, x + dx)), yy = Math.min(hh - 1, Math.max(0, y + dy)), i = (yy * w + xx) * 4;
+      const sat = Math.max(data[i], data[i + 1], data[i + 2]) - Math.min(data[i], data[i + 1], data[i + 2]);
+      if (sat < 22) continue;
+      r += data[i]; g += data[i + 1]; b += data[i + 2]; n++;
+    }
+    return n ? [r / n / 255, g / n / 255, b / n / 255] : null;
+  };
+  const pos = [], tint = [], size = [], alpha = [];
+  let seed = 4242;
   const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-  for (let k = 0; k < 24000 && pos.length < 2600 * 3; k++) {
+  const target = Math.round(250 + 900 * amount);
+  for (let k = 0; k < 40000 && size.length < target; k++) {
     const x = Math.floor(rnd() * w), y = Math.floor(rnd() * hh), i = (y * w + x) * 4;
-    const r = data[i], gg = data[i + 1], b = data[i + 2];
-    const sat = Math.max(r, gg, b) - Math.min(r, gg, b);
-    const lum = 0.299 * r + 0.587 * gg + 0.114 * b;
-    if (sat < 32 || lum < 60) continue;
+    const sat = Math.max(data[i], data[i + 1], data[i + 2]) - Math.min(data[i], data[i + 1], data[i + 2]);
+    const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    if (sat < 28 || lum < 55) continue;
     const u = x / (w - 1), v = y / (hh - 1);
-    const depth = heightAt(u, v);
-    if (depth <= 0) continue;
+    const depth = sample(...gxy(u, v)) * zScale;
+    if (!(depth > 0)) continue;
+    const c = avg(x, y);
+    if (!c) continue;
     const [X, Y] = toWorld(u, v);
-    pos.push(X + (rnd() - 0.5) * 6 * unit, Y + (rnd() - 0.5) * 6 * unit, (rnd() * 2 - 1) * depth * 0.9);
-    col.push(r / 255, gg / 255, b / 255);
+    pos.push(X + (rnd() - 0.5) * 0.03, Y + (rnd() - 0.5) * 0.03, (rnd() * 2 - 1) * depth * 0.95);
+    tint.push(...c);
+    size.push(0.06 + Math.pow(rnd(), 2) * 0.34);                       // many small, a few large puffs
+    alpha.push((0.035 + Math.pow(rnd(), 3) * 0.2) * (0.5 + amount));    // mostly faint, some denser
   }
-  if (pos.length < 30) return null;
+  if (size.length < 20) return null;
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-  const m = new THREE.PointsMaterial({ size: 0.11, map: softSprite(), vertexColors: true, transparent: true, opacity: 0.32, depthWrite: false, sizeAttenuation: true });
+  g.setAttribute('tint', new THREE.Float32BufferAttribute(tint, 3));
+  g.setAttribute('size', new THREE.Float32BufferAttribute(size, 1));
+  g.setAttribute('alpha', new THREE.Float32BufferAttribute(alpha, 1));
+  const m = new THREE.ShaderMaterial({
+    uniforms: { uScale: { value: 400 } },
+    vertexShader: `
+      attribute vec3 tint; attribute float size; attribute float alpha;
+      uniform float uScale; varying vec3 vTint; varying float vAlpha;
+      void main() {
+        vTint = tint; vAlpha = alpha;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = size * uScale / max(0.001, -mv.z);
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      varying vec3 vTint; varying float vAlpha;
+      void main() {
+        float d = length(gl_PointCoord - 0.5) * 2.0;
+        if (d > 1.0) discard;
+        float a = exp(-d * d * 3.2) * vAlpha;   // airbrush falloff
+        gl_FragColor = vec4(vTint, a);
+      }`,
+    transparent: true, depthWrite: false,
+  });
   const p = new THREE.Points(g, m);
-  p.name = 'smoke';
+  p.name = 'cloud';
+  // Point size in pixels follows the canvas height and the camera's field of view.
+  p.onBeforeRender = (renderer, scene, camera) => {
+    m.uniforms.uScale.value = renderer.domElement.height / (2 * Math.tan((camera.fov * Math.PI) / 360));
+  };
   return p;
 }
