@@ -1,0 +1,9 @@
+{
+  "name": "drawing-to-3d",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hebrew RTL app: drawing to 3D model via Meshy, with in-browser GLB viewer.",
+  "engines": {
+    "node": ">=18"
+  }
+}
