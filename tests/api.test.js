@@ -99,3 +99,14 @@ test('status: 404 maps to not_found', async () => {
   const res = mockRes(); await status({ method: 'GET', query: { id: 'task_12345' } }, res);
   assert.equal(res.body.error, 'not_found');
 });
+
+import health from '../api/health.js';
+
+test('health: reports configured state without leaking the key', async () => {
+  let res = mockRes(); health({ method: 'GET' }, res);
+  assert.deepEqual(res.body, { configured: true });
+  assert.ok(!JSON.stringify(res.body).includes('test-key'));
+  delete process.env.MESHY_API_KEY;
+  res = mockRes(); health({ method: 'GET' }, res);
+  assert.deepEqual(res.body, { configured: false });
+});
