@@ -123,6 +123,12 @@ h1 span { color: var(--muted); }
   display: flex; justify-content: space-between; gap: 12px;
 }
 
+.anim { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; min-width: 0; padding-top: 2px; }
+.anim .scrub { flex: 1 1 160px; min-width: 0; display: flex; }
+.anim .scrub input { width: 100%; }
+.anim output { font-family: var(--mono); font-size: 12px; color: var(--muted); min-width: 4.5em; text-align: left; }
+.anim .btn { padding: 9px 14px; font-size: 13.5px; }
+.annotation.hidden-while-drawing { opacity: 0; transition: opacity var(--mid) var(--ease); }
 .stage-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; min-width: 0; }
 .seg { display: inline-flex; border: 1px solid var(--line); }
 .seg button, .toggle {

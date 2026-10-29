@@ -111,11 +111,66 @@ export function lineSculpture(prepared, opts) {
   const group = new THREE.Group();
   group.add(wire);
   const cloud = opts.cloud === true ? 0.6 : opts.cloud === false ? 0 : (opts.cloud ?? LINE_DEFAULTS.cloud);
+  let cloudPoints = null;
   if (cloud > 0) {
-    const c = colourCloud(prepared, sample, unit * k, gxy, toWorld, cloud);
-    if (c) group.add(c);
+    cloudPoints = colourCloud(prepared, sample, unit * k, gxy, toWorld, cloud);
+    if (cloudPoints) group.add(cloudPoints);
   }
-  return { object: group, closed: isClosed(tube.indices), lines: strokes.length, loops: loops.length, continuous: paths.length === 1 && strokes.length + loops.length > 1 };
+  return {
+    object: group, closed: isClosed(tube.indices), lines: strokes.length, loops: loops.length,
+    continuous: paths.length === 1 && strokes.length + loops.length > 1,
+    animation: drawingAnimation(group, g, tube.timeline, cloudPoints, radius),
+  };
+}
+
+/**
+ * Drawing the work from the first line to the last: the thread is revealed along its own
+ * timeline (drawn lines at pen speed, wrapping faster), a warm pen tip leads it, and the
+ * colour is sprayed in at the end. set(p) with p from 0 to 1.
+ */
+function drawingAnimation(group, wireGeometry, tl, cloudPoints, radius) {
+  const steps = tl.end.length;
+  const duration = Math.max(10, Math.min(30, 8 + tl.duration * 0.45)); // seconds
+  const lineShare = cloudPoints ? 0.86 : 1;
+  const cloudCount = cloudPoints ? cloudPoints.geometry.attributes.position.count : 0;
+
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g2 = c.getContext('2d');
+  const r = g2.createRadialGradient(32, 32, 0, 32, 32, 32);
+  r.addColorStop(0, 'rgba(255,236,200,1)');
+  r.addColorStop(0.25, 'rgba(232,178,106,0.9)');
+  r.addColorStop(1, 'rgba(232,178,106,0)');
+  g2.fillStyle = r;
+  g2.fillRect(0, 0, 64, 64);
+  const tip = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthWrite: false, depthTest: false, transparent: true }));
+  tip.renderOrder = 10; // the pen is always seen, also behind the wire
+  tip.name = 'tip';
+  tip.scale.setScalar(Math.max(0.07, radius * 14));
+  tip.visible = false;
+
+  let attached = false;
+  function set(p) {
+    p = Math.max(0, Math.min(1, p));
+    if (!attached) { group.add(tip); attached = true; } // after framing, so it never changes the bounds
+    const q = Math.min(1, p / lineShare);
+    if (q >= 1 || !steps) {
+      wireGeometry.setDrawRange(0, Infinity);
+      tip.visible = false;
+    } else {
+      const target = q * tl.duration;
+      let lo = 0, hi = steps - 1;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (tl.time[mid] < target) lo = mid + 1; else hi = mid; }
+      wireGeometry.setDrawRange(0, q <= 0 ? 0 : tl.end[lo]);
+      tip.position.set(tl.tip[lo * 3], tl.tip[lo * 3 + 1], tl.tip[lo * 3 + 2]);
+      tip.visible = q > 0;
+    }
+    if (cloudPoints) {
+      const cp = lineShare >= 1 ? 1 : Math.max(0, Math.min(1, (p - lineShare) / (1 - lineShare)));
+      cloudPoints.geometry.setDrawRange(0, p >= 1 ? Infinity : Math.floor(cp * cloudCount));
+    }
+  }
+  return { duration, set };
 }
 
 // Colour as sprayed pigment in the air: soft round puffs of different sizes and transparencies,
