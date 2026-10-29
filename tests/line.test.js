@@ -92,20 +92,33 @@ test('sensitivity: a faint grey line is found only when sensitivity is high', ()
   assert.ok(hasFaint(high), 'high sensitivity finds the faint line');
 });
 
-test('wrap: loops cross the front, pass the rim and return across the back', () => {
-  const W = 80, H = 60, mask = new Uint8Array(W * H);
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (((x - 40) / 30) ** 2 + ((y - 30) / 22) ** 2 < 1) mask[y * W + x] = 1;
-  const zAt = (x, y) => Math.max(0, 1 - ((x - 40) / 30) ** 2 - ((y - 30) / 22) ** 2) * 0.3;
-  const toW = (x, y) => [x / 40 - 1, 1 - y / 30];
-  assert.equal(wrapLoops({ mask, W, H }, zAt, toW, { wrap: 0 }).length, 0, 'no wrapping at 0');
-  const loops = wrapLoops({ mask, W, H }, zAt, toW, { wrap: 0.5 });
-  assert.ok(loops.length >= 25, `${loops.length} loops`);
-  for (const l of loops) {
-    assert.ok(l.some((p) => p[2] > 0.05) && l.some((p) => p[2] < -0.05), 'goes in front and behind');
-    assert.deepEqual(l[0], l.at(-1), 'closed loop');
+test('wrap: a round spiral around the body, not a zigzag', () => {
+  const W = 80, H = 120, mask = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (((x - 40) / 28) ** 2 + ((y - 60) / 52) ** 2 < 1) mask[y * W + x] = 1;
+  const zAt = (x, y) => Math.max(0, 1 - ((x - 40) / 28) ** 2 - ((y - 60) / 52) ** 2) ** 0.5 * 0.4;
+  const toW = (x, y) => [x / 60 - 0.66, 1 - y / 60];
+  const none = wrapLoops({ mask, W, H }, zAt, toW, { wrap: 0 });
+  assert.equal(none.length, 0, 'no wrapping at 0');
+  const paths = wrapLoops({ mask, W, H }, zAt, toW, { wrap: 0.5 });
+  assert.ok(paths.turns >= 20, `${paths.turns} turns`);
+  assert.equal(paths.length, 3, 'three passes, like a ball of yarn wound from three directions');
+  for (const p of paths) {
+    // Goes round: front and back alternate about twice per turn.
+    let flips = 0;
+    for (let i = 1; i < p.length; i++) if (Math.sign(p[i][2]) !== Math.sign(p[i - 1][2]) && p[i][2] !== 0) flips++;
+    assert.ok(flips >= 2 * (paths.turns / 3) - 2, `round trips (${flips} front/back changes)`);
+    // Round, not zigzag: almost no sharp turns between consecutive segments.
+    let sharp = 0;
+    for (let i = 2; i < p.length; i++) {
+      const u = [0, 1, 2].map((j) => p[i - 1][j] - p[i - 2][j]), v = [0, 1, 2].map((j) => p[i][j] - p[i - 1][j]);
+      const c = (u[0] * v[0] + u[1] * v[1] + u[2] * v[2]) / (Math.hypot(...u) * Math.hypot(...v) || 1);
+      if (c < 0.85) sharp++;
+    }
+    assert.ok(sharp / p.length < 0.02, `smooth spiral (${sharp} sharp turns of ${p.length})`);
+    // Climbs: the spiral covers the length of the body.
+    const ys = p.map((q) => q[1]);
+    assert.ok(Math.max(...ys) - Math.min(...ys) > 1.2, 'climbs along the body');
   }
-  const angles = new Set(loops.map((l) => Math.round(Math.atan2(l[3][1] - l[0][1], l[3][0] - l[0][0]) * 4)));
-  assert.ok(angles.size > 6, 'many directions, like wound yarn');
   assert.ok(depthScale(1) > depthScale(0));
 });
 

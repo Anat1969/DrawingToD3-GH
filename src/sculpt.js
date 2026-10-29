@@ -117,7 +117,7 @@ export function lineSculpture(prepared, opts) {
     if (cloudPoints) group.add(cloudPoints);
   }
   return {
-    object: group, closed: isClosed(tube.indices), lines: strokes.length, loops: loops.length,
+    object: group, closed: isClosed(tube.indices), lines: strokes.length, loops: loops.turns ?? loops.length,
     continuous: paths.length === 1 && strokes.length + loops.length > 1,
     animation: drawingAnimation(group, g, tube.timeline, cloudPoints, radius),
   };
