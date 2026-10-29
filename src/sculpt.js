@@ -99,13 +99,8 @@ export function lineSculpture(prepared, opts) {
   g.setAttribute('position', new THREE.BufferAttribute(tube.positions, 3));
   g.setIndex(new THREE.BufferAttribute(tube.indices, 1));
   g.computeVertexNormals();
-  // Drawn line in near-black ink; wrapping and connecting thread in warm graphite, so the
-  // drawing stays the subject and the yarn builds the volume around it.
-  const ink = new THREE.Color(0x1a1611), yarn = new THREE.Color(0x8a7f6c), col = new Float32Array(tube.weight.length * 3);
-  const tmp = new THREE.Color();
-  tube.weight.forEach((w, i) => { tmp.copy(yarn).lerp(ink, Math.max(0, Math.min(1, (w - 0.5) / 0.5))); col.set([tmp.r, tmp.g, tmp.b], i * 3); });
-  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  const wire = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.42, metalness: 0.3 }));
+  // One line, one colour: the drawing's ink continues into the wrapping without a seam.
+  const wire = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0x1a1611, roughness: 0.4, metalness: 0.3 }));
   wire.name = 'line';
 
   const group = new THREE.Group();
