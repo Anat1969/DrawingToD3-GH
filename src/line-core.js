@@ -8,9 +8,10 @@
 // Simplification: Ramer-Douglas-Peucker. Smoothing: Chaikin corner cutting.
 
 export const LINE_DEFAULTS = { depth: 0.5, thickness: 0.35, continuous: true, sensitivity: 0.6, wrap: 0.35, cloud: 0.6 };
-// The connecting thread and the wrapping are finer than the drawn line, so the drawing still reads.
-const CONNECTOR = 0.4;
-const WRAP = 0.5;
+// One line: the drawn strokes, the connecting thread and the wrapping are the same line
+// (same colour, same thickness). Anat, 29.10.2026: "one colour, no distinction".
+const CONNECTOR = 1;
+const WRAP = 1;
 
 /** How far the surface is pushed out of the drawing plane, from the depth slider. */
 export const depthScale = (depth) => 0.25 + 1.75 * clamp01(depth ?? LINE_DEFAULTS.depth);
@@ -115,7 +116,8 @@ export function liftStrokes(strokes, map, heightAt, toWorld, opts = {}) {
         const longJump = gap > 0.35;
         for (let t = 1; t < steps; t++) {
           const f = t / steps;
-          const dip = longJump ? Math.sin(Math.PI * f) * Math.min(back, 0.25 + gap * 0.5) : -Math.sin(Math.PI * f) * Math.min(0.03, gap * 0.2);
+          // Long jumps pass through the volume in a gentle arc; short hops stay on the surface.
+          const dip = longJump ? Math.sin(Math.PI * f) * Math.min(back * 0.8, 0.15 + gap * 0.35) : -Math.sin(Math.PI * f) * Math.min(0.03, gap * 0.2);
           path.push([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f - dip, CONNECTOR]);
         }
       }
@@ -126,103 +128,166 @@ export function liftStrokes(strokes, map, heightAt, toWorld, opts = {}) {
 }
 
 /**
- * Wrapping: a continuous spiral that winds around the body, like yarn wound on a form.
- * At each station along an axis the cross-section of the body is measured (width from the
- * silhouette, depth from the inflated surface) and the thread circles it on an ellipse,
- * climbing slowly. Three passes (upright and tilted about 26 degrees either way) cross each
- * other the way a ball of yarn is wound. The result is round and gives the sculpture volume.
- * @param a      { mask, W, H } of the analysed silhouette (grid pixels)
+ * Wrapping as a freehand pen in space: one continuous gesture that winds around each part
+ * of the figure (head, body, arm, balloon) along that part's own axis, sometimes on the
+ * surface and sometimes through the volume, travelling along limbs, turning back at their
+ * ends and crossing over to other parts. Nothing is a perfect circle: speed, radius and tilt
+ * drift like a hand.
+ * Reading of the shape: the medial axis (ridge of the distance-to-outline field) gives each
+ * part's centre line; its direction comes from the Hessian of that field (the ridge runs
+ * along the direction of least curvature).
+ * @param a      analysed silhouette { mask, W, H, dist? } (grid pixels)
  * @param zAt    (gx, gy) => surface depth in world units (>= 0)
  * @param toW    (gx, gy) => [x, y] world coords
- * @returns {Array<Array<[x,y,z,w]>>} paths, with a `turns` count on the array
+ * @returns {Array<Array<[x,y,z,w]>>} one path, with a `turns` count on the array
  */
 export function wrapLoops(a, zAt, toW, opts = {}) {
   const amount = clamp01(opts.wrap ?? LINE_DEFAULTS.wrap);
-  const totalTurns = Math.round(amount * 48);
+  const turns = Math.round(amount * 44);
   const lift = opts.lift || 0;
   const out = [];
   out.turns = 0;
-  if (!totalTurns) return out;
+  if (!turns) return out;
   const { mask, W, H } = a;
-  const inside = (x, y) => { const xi = Math.round(x), yi = Math.round(y); return xi >= 0 && yi >= 0 && xi < W && yi < H && mask[yi * W + xi] === 1; };
-  let cx = 0, cy = 0, n = 0;
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (mask[y * W + x]) { cx += x; cy += y; n++; }
-  if (!n) return out;
-  cx /= n; cy /= n;
-  const reach = Math.hypot(W, H);
-  const passes = [0, 0.45, -0.45];
-  const perPass = Math.max(2, Math.round(totalTurns / passes.length));
+  const D = blurField(a.dist || chamfer2(mask, W, H), mask, W, H, 3);
+  let dmax = 0, start = -1;
+  for (let p = 0; p < D.length; p++) if (D[p] > dmax) { dmax = D[p]; start = p; }
+  if (start < 0 || dmax < 1.5) return out;
 
-  passes.forEach((alpha, k) => {
-    const d = [Math.sin(alpha), Math.cos(alpha)];   // axis along the body (grid y is down)
-    const nrm = [Math.cos(alpha), -Math.sin(alpha)]; // across the body
-    let sMin = Infinity, sMax = -Infinity;
-    for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2) if (mask[y * W + x]) {
-      const sv = (x - cx) * d[0] + (y - cy) * d[1];
-      if (sv < sMin) sMin = sv; if (sv > sMax) sMax = sv;
-    }
-    if (!(sMax > sMin)) return;
-    // Measure the cross-section at stations along the axis.
-    const S = 120, margin = (sMax - sMin) * 0.03;
-    const tc = new Float32Array(S), rx = new Float32Array(S), rz = new Float32Array(S), ok = new Uint8Array(S);
-    let prev = 0;
-    for (let i = 0; i < S; i++) {
-      const sv = sMin + margin + ((sMax - sMin - 2 * margin) * i) / (S - 1);
-      const runs = [];
-      let r0 = null;
-      for (let t = -reach; t <= reach; t += 1) {
-        const x = cx + d[0] * sv + nrm[0] * t, y = cy + d[1] * sv + nrm[1] * t;
-        if (inside(x, y)) { if (r0 === null) r0 = t; }
-        else if (r0 !== null) { runs.push([r0, t - 1]); r0 = null; }
-      }
-      if (r0 !== null) runs.push([r0, reach]);
-      if (!runs.length) continue;
-      // Keep the run that continues the previous station (one body), else the widest.
-      runs.sort((p, q) => Math.abs((p[0] + p[1]) / 2 - prev) - Math.abs((q[0] + q[1]) / 2 - prev) || (q[1] - q[0]) - (p[1] - p[0]));
-      const [t0, t1] = i === 0 ? runs.sort((p, q) => (q[1] - q[0]) - (p[1] - p[0]))[0] : runs[0];
-      if (t1 - t0 < 2) continue;
-      const mid = (t0 + t1) / 2;
-      let depth = 0;
-      for (let f = 0.2; f <= 0.8; f += 0.15) {
-        const t = t0 + (t1 - t0) * f;
-        depth = Math.max(depth, zAt(cx + d[0] * sv + nrm[0] * t, cy + d[1] * sv + nrm[1] * t));
-      }
-      tc[i] = mid; rx[i] = (t1 - t0) / 2; rz[i] = depth; ok[i] = 1; prev = mid;
-    }
-    // Smooth along the axis so the thread runs round, not along every bump of the outline.
-    const smooth = (arr) => {
-      const o = new Float32Array(S);
-      for (let i = 0; i < S; i++) {
-        if (!ok[i]) continue;
-        let sum = 0, c = 0;
-        for (let j = Math.max(0, i - 4); j <= Math.min(S - 1, i + 4); j++) if (ok[j]) { sum += arr[j]; c++; }
-        o[i] = sum / c;
-      }
-      return o;
-    };
-    const TC = smooth(tc), RX = smooth(rx), RZ = smooth(rz);
+  // Smooth pseudo-random drift (sums of slow sines): the "hand".
+  let seed = opts.seed || 20261029;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const wave = () => { const f = [0.011 + rnd() * 0.02, 0.031 + rnd() * 0.04, 0.07 + rnd() * 0.05], ph = [rnd() * 6.3, rnd() * 6.3, rnd() * 6.3]; return (t) => (Math.sin(t * f[0] + ph[0]) * 0.55 + Math.sin(t * f[1] + ph[1]) * 0.3 + Math.sin(t * f[2] + ph[2]) * 0.15); };
+  const wSpeed = wave(), wRadius = wave(), wTilt = wave(), wAxial = wave(), wDepth = wave();
 
-    // The spiral: around the ellipse of each cross-section, climbing along the axis.
-    const steps = perPass * 56;
-    const phase = k * 2.1;
-    let path = [];
-    for (let j = 0; j <= steps; j++) {
-      const f = j / steps;
-      const pos = (k % 2 ? 1 - f : f) * (S - 1);
-      const i0 = Math.floor(pos), i1 = Math.min(S - 1, i0 + 1), w = pos - i0;
-      if (!ok[i0] || !ok[i1]) { if (path.length > 8) out.push(path); path = []; continue; }
-      const sv = sMin + margin + ((sMax - sMin - 2 * margin) * pos) / (S - 1);
-      const T = TC[i0] * (1 - w) + TC[i1] * w, R = (RX[i0] * (1 - w) + RX[i1] * w) * 1.03, Z = RZ[i0] * (1 - w) + RZ[i1] * w;
-      const phi = f * perPass * Math.PI * 2 + phase;
-      const t = T + R * Math.cos(phi);
-      const gx = cx + d[0] * sv + nrm[0] * t, gy = cy + d[1] * sv + nrm[1] * t;
-      const [X, Y] = toW(gx, gy);
-      path.push([X, Y, (Z * 1.06 + lift) * Math.sin(phi), WRAP]);
+  const Dat = (x, y) => sampleField(D, W, H, x, y);
+  const inMask = (x, y) => { const xi = Math.round(x), yi = Math.round(y); return xi >= 0 && yi >= 0 && xi < W && yi < H && mask[yi * W + xi] === 1; };
+  // Direction of the part at (x, y): along the ridge, from the Hessian of the distance field.
+  const axisAt = (x, y) => {
+    const e = 2;
+    const c0 = Dat(x, y);
+    const dxx = (Dat(x + e, y) - 2 * c0 + Dat(x - e, y)) / (e * e);
+    const dyy = (Dat(x, y + e) - 2 * c0 + Dat(x, y - e)) / (e * e);
+    const dxy = (Dat(x + e, y + e) - Dat(x + e, y - e) - Dat(x - e, y + e) + Dat(x - e, y - e)) / (4 * e * e);
+    const ang = 0.5 * Math.atan2(2 * dxy, dxx - dyy); // eigenvector of the larger eigenvalue
+    return [Math.cos(ang), Math.sin(ang)];
+  };
+  // Pull a point back onto the centre line of its part, moving across the part only.
+  const recentre = (c, g) => {
+    for (let k = 0; k < 1; k++) { // at most one pixel per step: the hand does not jump
+      const f = Dat(c[0] + g[0], c[1] + g[1]), b = Dat(c[0] - g[0], c[1] - g[1]), m = Dat(c[0], c[1]);
+      if (f > m && f >= b) { c[0] += g[0]; c[1] += g[1]; } else if (b > m) { c[0] -= g[0]; c[1] -= g[1]; } else break;
     }
-    if (path.length > 8) out.push(path);
-    out.turns += perPass;
-  });
+  };
+
+  const c = [start % W, Math.floor(start / W)];
+  let axis = axisAt(c[0], c[1]);
+  let dir = 1, theta = rnd() * Math.PI * 2;
+  const stepsPerTurn = 44;
+  const N = turns * stepsPerTurn;
+  let jump = null; // { from, to, k, n } while the pen crosses to another part
+  const path = [];
+  const cs = [c[0], c[1]];     // the centre the hand actually follows (with inertia)
+  let Rs = Math.max(1.2, Dat(c[0], c[1]));
+  let pen = null;
+  for (let i = 0; i < N; i++) {
+    let ax = axisAt(c[0], c[1]);
+    if (ax[0] * axis[0] + ax[1] * axis[1] < 0) ax = [-ax[0], -ax[1]];
+    axis = norm2([axis[0] * 0.92 + ax[0] * 0.08, axis[1] * 0.92 + ax[1] * 0.08]); // steady hand
+    const g = [-axis[1], axis[0]];
+    cs[0] += (c[0] - cs[0]) * 0.2; cs[1] += (c[1] - cs[1]) * 0.2;
+    Rs += (Math.max(1.2, Dat(cs[0], cs[1])) - Rs) * 0.15;
+    const R = Rs;
+    // Radius factor below 1 passes through the volume, above 1 floats just outside it.
+    const rf = 0.78 + 0.3 * wRadius(i);
+    const tilt = 0.35 * wTilt(i);
+    const off = R * rf * Math.cos(theta);
+    const along = R * tilt * Math.sin(theta);
+    const px = cs[0] + g[0] * off + axis[0] * along, py = cs[1] + g[1] * off + axis[1] * along;
+    const depth = zAt(cs[0], cs[1]) * (0.82 + 0.28 * wDepth(i));
+    const [X, Y] = toW(px, py);
+    const target = [X, Y, (depth + lift) * Math.sin(theta)];
+    // The pen follows its target with inertia, so corners become curves.
+    pen = pen ? pen.map((v, j) => v + (target[j] - v) * 0.55) : target;
+    path.push([pen[0], pen[1], pen[2], WRAP]);
+
+    theta += ((Math.PI * 2) / stepsPerTurn) * (0.75 + 0.45 * (wSpeed(i) + 1) / 2);
+    if (jump) {
+      jump.k++;
+      const f = jump.k / jump.n, e = f * f * (3 - 2 * f);
+      c[0] = jump.from[0] + (jump.to[0] - jump.from[0]) * e;
+      c[1] = jump.from[1] + (jump.to[1] - jump.from[1]) * e;
+      if (jump.k >= jump.n) jump = null;
+      continue;
+    }
+    // Travel along the part, faster on long thin parts, with the hand's own rhythm.
+    const v = (0.12 + R * 0.025) * (0.6 + 0.8 * (wAxial(i) + 1) / 2);
+    const nx = c[0] + axis[0] * v * dir, ny = c[1] + axis[1] * v * dir;
+    if (!inMask(nx, ny) || Dat(nx, ny) < Math.max(1.2, R * 0.35)) { dir = -dir; } // end of the part: turn back
+    else { c[0] = nx; c[1] = ny; recentre(c, g); }
+    // Now and then cross over to another part of the figure, through the volume.
+    if (i % (stepsPerTurn * 4) === stepsPerTurn * 2 && rnd() < 0.85) {
+      let best = null;
+      for (let t = 0; t < 60; t++) {
+        const q = Math.floor(rnd() * W * H);
+        if (!mask[q] || D[q] < dmax * 0.25) continue;
+        const qx = q % W, qy = Math.floor(q / W), far = Math.hypot(qx - c[0], qy - c[1]);
+        const score = far * (0.5 + D[q] / dmax);
+        if (far > Math.hypot(W, H) * 0.12 && (!best || score > best.score)) best = { x: qx, y: qy, score };
+      }
+      if (best) jump = { from: [c[0], c[1]], to: [best.x, best.y], k: 0, n: Math.round(stepsPerTurn * 0.9) };
+    }
+  }
+  out.push(path);
+  out.turns = turns;
   return out;
+}
+
+function norm2(v) { const l = Math.hypot(v[0], v[1]) || 1; return [v[0] / l, v[1] / l]; }
+
+function sampleField(F, W, H, x, y) {
+  const x0 = Math.max(0, Math.min(W - 2, Math.floor(x))), y0 = Math.max(0, Math.min(H - 2, Math.floor(y)));
+  const fx = Math.max(0, Math.min(1, x - x0)), fy = Math.max(0, Math.min(1, y - y0));
+  const p = y0 * W + x0;
+  return (F[p] * (1 - fx) + F[p + 1] * fx) * (1 - fy) + (F[p + W] * (1 - fx) + F[p + W + 1] * fx) * fy;
+}
+
+function blurField(src, mask, W, H, passes) {
+  let a = Float32Array.from(src);
+  for (let k = 0; k < passes; k++) {
+    const b = new Float32Array(a.length);
+    for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+      const p = y * W + x;
+      if (!mask[p]) continue;
+      let s = 0, c = 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const q = p + dy * W + dx; if (mask[q]) { s += a[q]; c++; } }
+      b[p] = s / c;
+    }
+    a = b;
+  }
+  return a;
+}
+
+// Distance to the outline (chamfer 3-4) for callers that do not pass one.
+function chamfer2(mask, W, H) {
+  const d = new Float32Array(mask.length);
+  for (let p = 0; p < mask.length; p++) d[p] = mask[p] ? 1e9 : 0;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const p = y * W + x; if (!d[p]) continue;
+    let v = d[p];
+    if (x > 0) v = Math.min(v, d[p - 1] + 3);
+    if (y > 0) { v = Math.min(v, d[p - W] + 3); if (x > 0) v = Math.min(v, d[p - W - 1] + 4); if (x < W - 1) v = Math.min(v, d[p - W + 1] + 4); }
+    d[p] = v;
+  }
+  for (let y = H - 1; y >= 0; y--) for (let x = W - 1; x >= 0; x--) {
+    const p = y * W + x; if (!d[p]) continue;
+    let v = d[p];
+    if (x < W - 1) v = Math.min(v, d[p + 1] + 3);
+    if (y < H - 1) { v = Math.min(v, d[p + W] + 3); if (x < W - 1) v = Math.min(v, d[p + W + 1] + 4); if (x > 0) v = Math.min(v, d[p + W - 1] + 4); }
+    d[p] = v;
+  }
+  for (let p = 0; p < d.length; p++) d[p] /= 3;
+  return d;
 }
 
 /**

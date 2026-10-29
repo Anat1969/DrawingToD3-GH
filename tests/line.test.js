@@ -38,7 +38,8 @@ test('lift: continuous mode gives one thread that winds behind', () => {
   const heightAt = () => 0.2;
   const paths = liftStrokes(s, { sw: 200, sh: 160 }, heightAt, toWorld, { depth: 0.5, continuous: true });
   assert.equal(paths.length, 1);
-  assert.ok(paths[0].some((p) => p[2] < 0), 'connector passes behind the drawing plane');
+  const surface = 0.2 * 1.125; // heightAt x depth scale at depth 0.5
+  assert.ok(paths[0].some((p) => p[2] < surface * 0.6), 'long connector passes through the volume, below the surface');
   const apart = liftStrokes(s, { sw: 200, sh: 160 }, heightAt, toWorld, { continuous: false });
   assert.equal(apart.length, s.length);
 });
@@ -92,34 +93,45 @@ test('sensitivity: a faint grey line is found only when sensitivity is high', ()
   assert.ok(hasFaint(high), 'high sensitivity finds the faint line');
 });
 
-test('wrap: a round spiral around the body, not a zigzag', () => {
-  const W = 80, H = 120, mask = new Uint8Array(W * H);
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (((x - 40) / 28) ** 2 + ((y - 60) / 52) ** 2 < 1) mask[y * W + x] = 1;
-  const zAt = (x, y) => Math.max(0, 1 - ((x - 40) / 28) ** 2 - ((y - 60) / 52) ** 2) ** 0.5 * 0.4;
-  const toW = (x, y) => [x / 60 - 0.66, 1 - y / 60];
-  const none = wrapLoops({ mask, W, H }, zAt, toW, { wrap: 0 });
-  assert.equal(none.length, 0, 'no wrapping at 0');
-  const paths = wrapLoops({ mask, W, H }, zAt, toW, { wrap: 0.5 });
-  assert.ok(paths.turns >= 20, `${paths.turns} turns`);
-  assert.equal(paths.length, 3, 'three passes, like a ball of yarn wound from three directions');
-  for (const p of paths) {
-    // Goes round: front and back alternate about twice per turn.
-    let flips = 0;
-    for (let i = 1; i < p.length; i++) if (Math.sign(p[i][2]) !== Math.sign(p[i - 1][2]) && p[i][2] !== 0) flips++;
-    assert.ok(flips >= 2 * (paths.turns / 3) - 2, `round trips (${flips} front/back changes)`);
-    // Round, not zigzag: almost no sharp turns between consecutive segments.
-    let sharp = 0;
-    for (let i = 2; i < p.length; i++) {
-      const u = [0, 1, 2].map((j) => p[i - 1][j] - p[i - 2][j]), v = [0, 1, 2].map((j) => p[i][j] - p[i - 1][j]);
-      const c = (u[0] * v[0] + u[1] * v[1] + u[2] * v[2]) / (Math.hypot(...u) * Math.hypot(...v) || 1);
-      if (c < 0.85) sharp++;
-    }
-    assert.ok(sharp / p.length < 0.02, `smooth spiral (${sharp} sharp turns of ${p.length})`);
-    // Climbs: the spiral covers the length of the body.
-    const ys = p.map((q) => q[1]);
-    assert.ok(Math.max(...ys) - Math.min(...ys) > 1.2, 'climbs along the body');
+test('wrap: freehand pen through the volume, following each part of the figure', () => {
+  // Two parts: a tall body and a round head joined by a neck, like a figure.
+  const W = 100, H = 160, mask = new Uint8Array(W * H);
+  const body = (x, y) => ((x - 50) / 26) ** 2 + ((y - 105) / 48) ** 2 < 1;
+  const head = (x, y) => ((x - 50) / 17) ** 2 + ((y - 35) / 17) ** 2 < 1;
+  const neck = (x, y) => Math.abs(x - 50) < 6 && y > 45 && y < 62;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (body(x, y) || head(x, y) || neck(x, y)) mask[y * W + x] = 1;
+  const surf = (x, y) => (mask[Math.round(y) * W + Math.round(x)] ? 0.3 : 0);
+  const toW = (x, y) => [x / 80 - 0.6, 1 - y / 80];
+  assert.equal(wrapLoops({ mask, W, H }, surf, toW, { wrap: 0 }).length, 0, 'no wrapping at 0');
+  const out = wrapLoops({ mask, W, H }, surf, toW, { wrap: 0.5 });
+  assert.equal(out.length, 1, 'one continuous gesture');
+  assert.ok(out.turns >= 20);
+  const p = out[0];
+  // One line: same weight as the drawn strokes (same colour and thickness).
+  assert.ok(p.every((q) => q[3] === 1), 'same line as the drawing');
+  // Goes round: in front of and behind the drawing plane.
+  assert.ok(p.some((q) => q[2] > 0.15) && p.some((q) => q[2] < -0.15), 'in front and behind');
+  // Through the volume: a real share of the line is well inside the surface depth.
+  const insideShare = p.filter((q) => Math.abs(q[2]) < 0.3 * 0.55 && Math.abs(q[2]) > 0.02).length / p.length;
+  assert.ok(insideShare > 0.15, `passes through the volume (${(insideShare * 100).toFixed(0)}% inside)`);
+  // Freehand, not circles: the swing across the part varies from turn to turn.
+  const swings = [];
+  let lo = Infinity, hi = -Infinity, prev = Math.sign(p[0][2]);
+  for (const q of p) { lo = Math.min(lo, q[0]); hi = Math.max(hi, q[0]); const sg = Math.sign(q[2]); if (sg && sg !== prev) { swings.push(hi - lo); lo = Infinity; hi = -Infinity; prev = sg; } }
+  const mean = swings.reduce((a, b) => a + b, 0) / swings.length;
+  const sd = Math.sqrt(swings.reduce((a, b) => a + (b - mean) ** 2, 0) / swings.length);
+  assert.ok(sd / mean > 0.12, `varies like a hand (spread ${(100 * sd / mean).toFixed(0)}%)`);
+  // Smooth: no zigzag.
+  let sharp = 0;
+  for (let i = 2; i < p.length; i++) {
+    const u = [0, 1, 2].map((j) => p[i - 1][j] - p[i - 2][j]), v = [0, 1, 2].map((j) => p[i][j] - p[i - 1][j]);
+    const c = (u[0] * v[0] + u[1] * v[1] + u[2] * v[2]) / (Math.hypot(...u) * Math.hypot(...v) || 1);
+    if (c < 0.7) sharp++;
   }
-  assert.ok(depthScale(1) > depthScale(0));
+  assert.ok(sharp / p.length < 0.03, `smooth gesture (${sharp} sharp turns of ${p.length})`);
+  // Understands the parts: the pen visits both the head and the body.
+  const ys = p.map((q) => (1 - q[1]) * 80);
+  assert.ok(ys.some((y) => y < 45) && ys.some((y) => y > 110), 'winds around the head and the body');
 });
 
 test('wrap: strokes plus wrapping make one closed printable thread', () => {

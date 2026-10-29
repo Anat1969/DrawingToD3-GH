@@ -113,7 +113,7 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
   await page.locator('#wrap').fill('60');
   await page.waitForTimeout(400);
   const loops = Number(((await page.locator('.ann-label').innerText()).match(/ליפופים:\s*(\d+)/) || [])[1]);
-  ok(loops >= 30, `wrap winds the thread around the volume (${loops} loops)`);
+  ok(loops >= 20, `wrap winds the thread around the volume (${loops} turns)`);
   ok(await page.locator('#factClosed').innerText() === 'כן', 'wrapped thread is still a closed body');
   await page.locator('#sensitivity').fill('95');
   await page.waitForTimeout(600);
