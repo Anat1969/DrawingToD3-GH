@@ -111,9 +111,11 @@ export function liftStrokes(strokes, map, heightAt, toWorld, opts = {}) {
       const gap = dist3(a, b);
       if (gap > 1e-4) {
         const steps = Math.max(4, Math.ceil(gap / 0.04));
+        // Short hops stay on the surface (no back-and-forth zigzag); long jumps go round the back.
+        const longJump = gap > 0.35;
         for (let t = 1; t < steps; t++) {
           const f = t / steps;
-          const dip = Math.sin(Math.PI * f) * Math.min(back, 0.3 + gap * 0.6);
+          const dip = longJump ? Math.sin(Math.PI * f) * Math.min(back, 0.25 + gap * 0.5) : -Math.sin(Math.PI * f) * Math.min(0.03, gap * 0.2);
           path.push([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f - dip, CONNECTOR]);
         }
       }
@@ -124,50 +126,103 @@ export function liftStrokes(strokes, map, heightAt, toWorld, opts = {}) {
 }
 
 /**
- * Wrapping: loops that run across the front of the body, over the rim and back across the
- * back, at many angles, like yarn wound around a form. They give the line sculpture its volume.
+ * Wrapping: a continuous spiral that winds around the body, like yarn wound on a form.
+ * At each station along an axis the cross-section of the body is measured (width from the
+ * silhouette, depth from the inflated surface) and the thread circles it on an ellipse,
+ * climbing slowly. Three passes (upright and tilted about 26 degrees either way) cross each
+ * other the way a ball of yarn is wound. The result is round and gives the sculpture volume.
  * @param a      { mask, W, H } of the analysed silhouette (grid pixels)
  * @param zAt    (gx, gy) => surface depth in world units (>= 0)
  * @param toW    (gx, gy) => [x, y] world coords
- * @returns {Array<Array<[x,y,z,w]>>}
+ * @returns {Array<Array<[x,y,z,w]>>} paths, with a `turns` count on the array
  */
 export function wrapLoops(a, zAt, toW, opts = {}) {
   const amount = clamp01(opts.wrap ?? LINE_DEFAULTS.wrap);
-  const count = Math.round(amount * 64);
+  const totalTurns = Math.round(amount * 48);
   const lift = opts.lift || 0;
-  if (!count) return [];
+  const out = [];
+  out.turns = 0;
+  if (!totalTurns) return out;
   const { mask, W, H } = a;
+  const inside = (x, y) => { const xi = Math.round(x), yi = Math.round(y); return xi >= 0 && yi >= 0 && xi < W && yi < H && mask[yi * W + xi] === 1; };
   let cx = 0, cy = 0, n = 0;
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (mask[y * W + x]) { cx += x; cy += y; n++; }
-  if (!n) return [];
+  if (!n) return out;
   cx /= n; cy /= n;
-  const inside = (x, y) => { const xi = Math.round(x), yi = Math.round(y); return xi >= 0 && yi >= 0 && xi < W && yi < H && mask[yi * W + xi] === 1; };
   const reach = Math.hypot(W, H);
-  const loops = [];
-  for (let i = 0; i < count; i++) {
-    // Angles and offsets from low-discrepancy sequences: even coverage, no visible pattern.
-    const theta = ((i * 0.6180339887) % 1) * Math.PI;
-    const dx = Math.cos(theta), dy = Math.sin(theta), nxv = -dy, nyv = dx;
-    let lo = Infinity, hi = -Infinity;
+  const passes = [0, 0.45, -0.45];
+  const perPass = Math.max(2, Math.round(totalTurns / passes.length));
+
+  passes.forEach((alpha, k) => {
+    const d = [Math.sin(alpha), Math.cos(alpha)];   // axis along the body (grid y is down)
+    const nrm = [Math.cos(alpha), -Math.sin(alpha)]; // across the body
+    let sMin = Infinity, sMax = -Infinity;
     for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2) if (mask[y * W + x]) {
-      const t = (x - cx) * nxv + (y - cy) * nyv;
-      if (t < lo) lo = t; if (t > hi) hi = t;
+      const sv = (x - cx) * d[0] + (y - cy) * d[1];
+      if (sv < sMin) sMin = sv; if (sv > sMax) sMax = sv;
     }
-    const off = lo + (hi - lo) * (0.06 + 0.88 * ((i * 0.7548776662 + 0.31) % 1));
-    // Longest run of the line inside the shape.
-    let best = null, run = null;
-    for (let sPos = -reach; sPos <= reach; sPos += 1.5) {
-      const x = cx + nxv * off + dx * sPos, y = cy + nyv * off + dy * sPos;
-      if (inside(x, y)) { if (!run) run = []; run.push([x, y]); }
-      else if (run) { if (!best || run.length > best.length) best = run; run = null; }
+    if (!(sMax > sMin)) return;
+    // Measure the cross-section at stations along the axis.
+    const S = 120, margin = (sMax - sMin) * 0.03;
+    const tc = new Float32Array(S), rx = new Float32Array(S), rz = new Float32Array(S), ok = new Uint8Array(S);
+    let prev = 0;
+    for (let i = 0; i < S; i++) {
+      const sv = sMin + margin + ((sMax - sMin - 2 * margin) * i) / (S - 1);
+      const runs = [];
+      let r0 = null;
+      for (let t = -reach; t <= reach; t += 1) {
+        const x = cx + d[0] * sv + nrm[0] * t, y = cy + d[1] * sv + nrm[1] * t;
+        if (inside(x, y)) { if (r0 === null) r0 = t; }
+        else if (r0 !== null) { runs.push([r0, t - 1]); r0 = null; }
+      }
+      if (r0 !== null) runs.push([r0, reach]);
+      if (!runs.length) continue;
+      // Keep the run that continues the previous station (one body), else the widest.
+      runs.sort((p, q) => Math.abs((p[0] + p[1]) / 2 - prev) - Math.abs((q[0] + q[1]) / 2 - prev) || (q[1] - q[0]) - (p[1] - p[0]));
+      const [t0, t1] = i === 0 ? runs.sort((p, q) => (q[1] - q[0]) - (p[1] - p[0]))[0] : runs[0];
+      if (t1 - t0 < 2) continue;
+      const mid = (t0 + t1) / 2;
+      let depth = 0;
+      for (let f = 0.2; f <= 0.8; f += 0.15) {
+        const t = t0 + (t1 - t0) * f;
+        depth = Math.max(depth, zAt(cx + d[0] * sv + nrm[0] * t, cy + d[1] * sv + nrm[1] * t));
+      }
+      tc[i] = mid; rx[i] = (t1 - t0) / 2; rz[i] = depth; ok[i] = 1; prev = mid;
     }
-    if (run && (!best || run.length > best.length)) best = run;
-    if (!best || best.length < 5) continue;
-    const front = best.map(([x, y]) => { const [X, Y] = toW(x, y); return [X, Y, zAt(x, y) + lift, WRAP]; });
-    const back = best.slice().reverse().map(([x, y]) => { const [X, Y] = toW(x, y); return [X, Y, -zAt(x, y) - lift, WRAP]; });
-    loops.push(front.concat(back, [front[0]]));
-  }
-  return loops;
+    // Smooth along the axis so the thread runs round, not along every bump of the outline.
+    const smooth = (arr) => {
+      const o = new Float32Array(S);
+      for (let i = 0; i < S; i++) {
+        if (!ok[i]) continue;
+        let sum = 0, c = 0;
+        for (let j = Math.max(0, i - 4); j <= Math.min(S - 1, i + 4); j++) if (ok[j]) { sum += arr[j]; c++; }
+        o[i] = sum / c;
+      }
+      return o;
+    };
+    const TC = smooth(tc), RX = smooth(rx), RZ = smooth(rz);
+
+    // The spiral: around the ellipse of each cross-section, climbing along the axis.
+    const steps = perPass * 56;
+    const phase = k * 2.1;
+    let path = [];
+    for (let j = 0; j <= steps; j++) {
+      const f = j / steps;
+      const pos = (k % 2 ? 1 - f : f) * (S - 1);
+      const i0 = Math.floor(pos), i1 = Math.min(S - 1, i0 + 1), w = pos - i0;
+      if (!ok[i0] || !ok[i1]) { if (path.length > 8) out.push(path); path = []; continue; }
+      const sv = sMin + margin + ((sMax - sMin - 2 * margin) * pos) / (S - 1);
+      const T = TC[i0] * (1 - w) + TC[i1] * w, R = (RX[i0] * (1 - w) + RX[i1] * w) * 1.03, Z = RZ[i0] * (1 - w) + RZ[i1] * w;
+      const phi = f * perPass * Math.PI * 2 + phase;
+      const t = T + R * Math.cos(phi);
+      const gx = cx + d[0] * sv + nrm[0] * t, gy = cy + d[1] * sv + nrm[1] * t;
+      const [X, Y] = toW(gx, gy);
+      path.push([X, Y, (Z * 1.06 + lift) * Math.sin(phi), WRAP]);
+    }
+    if (path.length > 8) out.push(path);
+    out.turns += perPass;
+  });
+  return out;
 }
 
 /**
