@@ -19,6 +19,7 @@ const el = {
   downloads: $('downloads'), downloadsEmpty: $('downloadsEmpty'), openLocal: $('openLocalBtn'), localFile: $('localFile'),
   factClosed: $('factClosed'), volume: $('volume'), volumeVal: $('volumeVal'), lineRelief: $('lineRelief'), lineVal: $('lineVal'),
   depth: $('depth'), depthVal: $('depthVal'), thickness: $('thickness'), thicknessVal: $('thicknessVal'), continuous: $('continuous'), wrap: $('wrap'), wrapVal: $('wrapVal'), sensitivity: $('sensitivity'), sensitivityVal: $('sensitivityVal'), cloud: $('cloud'), cloudVal: $('cloudVal'),
+  anim: $('anim'), playBtn: $('playBtn'), scrub: $('scrub'), animTime: $('animTime'), recordBtn: $('recordBtn'),
   saveBox: $('saveBox'), workName: $('workName'), saveBtn: $('saveBtn'),
   service: $('service'), serviceText: $('serviceText'), serviceHint: $('serviceHint'),
   archiveList: $('archiveList'), archiveEmpty: $('archiveEmpty'),
@@ -37,6 +38,7 @@ const state = {
   engine: readEngine(), // line | local | ai
   sculpt: null,         // drawing analysed once for the local engines
   workId: null,         // saved work currently open
+  anim: null,           // drawing animation of the current line sculpture
 };
 function readEngine() { try { const v = localStorage.getItem('drawing3d.engine.v2'); return ENGINES.includes(v) ? v : 'line'; } catch { return 'line'; } }
 
@@ -195,6 +197,7 @@ function setPhase(phase) {
   el.convert.disabled = !state.drawing || busy || needsService;
   el.convert.textContent = phase === 'failed' ? 'ניסיון נוסף' : state.engine === 'ai' ? 'המרה למודל' : 'פיסול מהציור';
   el.saveBox.hidden = phase !== 'sculpted';
+  el.anim.hidden = !(phase === 'sculpted' && state.engine === 'line' && state.anim);
   document.querySelectorAll('input[name="engine"]').forEach((r) => { r.disabled = busy; });
   el.sample.hidden = !!state.drawing;
   el.reset.hidden = !state.drawing || busy;
@@ -250,6 +253,7 @@ el.file.addEventListener('change', (e) => { pickFile(e.target.files[0]); e.targe
 el.drop.addEventListener('drop', (e) => pickFile(e.dataTransfer.files[0]));
 el.sample.addEventListener('click', () => useDrawing('/sample-drawing.svg', 'בית, רישום לדוגמה'));
 el.reset.addEventListener('click', () => {
+  stopDrawing(true);
   state.drawing = null;
   state.sculpt = null;
   state.workId = null;
@@ -309,8 +313,14 @@ function renderSculpt(keepView) {
   stage.setBackdrop(state.engine === 'line' ? 'paper' : 'dark');
   if (state.engine === 'line') {
     const r = lineSculpture(state.sculpt, params());
+    stopDrawing(true);
+    state.anim = r.animation;
+    play.p = 1;
+    showProgress();
     info = stage.setObject(r.object, { source: 'פיסול קווי', closed: r.closed, lines: r.lines, loops: r.loops, continuous: r.continuous }, { keepView });
   } else {
+    stopDrawing(true);
+    state.anim = null;
     const { object, closed } = sculptMesh(state.sculpt, params());
     info = stage.setObject(object, { source: 'פיסול מקומי', closed }, { keepView });
   }
@@ -330,6 +340,103 @@ for (const [input, out] of [[el.volume, el.volumeVal], [el.lineRelief, el.lineVa
   input.addEventListener('input', () => { out.textContent = input.value; liveUpdate(); });
 }
 el.continuous.addEventListener('change', liveUpdate);
+
+/* ---------------- Drawing the work from the first line (animation) ---------------- */
+const play = { on: false, p: 1, last: 0, frame: 0, recorder: null };
+const fmt = (sec) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
+function showProgress() {
+  el.scrub.value = Math.round(play.p * 1000);
+  const d = state.anim ? state.anim.duration : 0;
+  el.animTime.textContent = `${fmt(play.p * d)} / ${fmt(d)}`;
+  el.annotation.classList.toggle('hidden-while-drawing', play.p < 1);
+  el.playBtn.textContent = play.on ? 'השהיה' : play.p > 0 && play.p < 1 ? 'המשך' : 'ציור מההתחלה';
+}
+function tick(now) {
+  if (!play.on || !state.anim) return;
+  const dt = Math.min(0.1, (now - play.last) / 1000);
+  play.last = now;
+  play.p = Math.min(1, play.p + dt / state.anim.duration);
+  state.anim.set(play.p);
+  showProgress();
+  if (play.p >= 1) { play.on = false; showProgress(); finishRecording(); return; }
+  play.frame = requestAnimationFrame(tick);
+}
+function startDrawing(fromStart) {
+  if (!state.anim) return;
+  if (fromStart || play.p >= 1) play.p = 0;
+  play.on = true;
+  play.last = performance.now();
+  state.anim.set(play.p);
+  showProgress();
+  cancelAnimationFrame(play.frame);
+  play.frame = requestAnimationFrame(tick);
+}
+function stopDrawing(reset) {
+  play.on = false;
+  cancelAnimationFrame(play.frame);
+  if (reset) {
+    if (play.recorder) { play.recorder.cancelled = true; try { play.recorder.stop(); } catch { /* ignore */ } }
+    play.p = 1;
+    if (state.anim) state.anim.set(1);
+  }
+  showProgress();
+}
+el.playBtn.addEventListener('click', () => (play.on ? stopDrawing(false) : startDrawing(false)));
+el.scrub.addEventListener('input', () => {
+  if (!state.anim) return;
+  play.on = false;
+  cancelAnimationFrame(play.frame);
+  play.p = el.scrub.value / 1000;
+  state.anim.set(play.p);
+  showProgress();
+});
+
+// Video: the stage canvas is recorded while the drawing plays from the first line to the last.
+function pickVideoType() {
+  if (typeof MediaRecorder === 'undefined') return null;
+  for (const t of ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4']) if (MediaRecorder.isTypeSupported(t)) return t;
+  return null;
+}
+function recordDrawing() {
+  const type = pickVideoType();
+  if (!type || !stage || !stage.canvas.captureStream || !state.anim) {
+    setStatus('הדפדפן הזה לא תומך בהקלטת וידאו. ב-Chrome זה עובד.', 'error');
+    return;
+  }
+  const chunks = [];
+  const rec = new MediaRecorder(stage.canvas.captureStream(30), { mimeType: type, videoBitsPerSecond: 6_000_000 });
+  rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+  rec.onstop = () => {
+    el.recordBtn.disabled = false;
+    el.recordBtn.textContent = 'שמירת וידאו';
+    const cancelled = rec.cancelled;
+    play.recorder = null;
+    if (cancelled || !chunks.length) return;
+    const blob = new Blob(chunks, { type: type.split(';')[0] });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    // ASCII file name: Chrome drops non-Latin names on late downloads (seen in testing).
+    const d = new Date(), z = (n) => String(n).padStart(2, '0');
+    a.download = `drawing-${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}.${type.includes('mp4') ? 'mp4' : 'webm'}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    setStatus('הווידאו נשמר בהורדות.', 'ok');
+  };
+  play.recorder = rec;
+  el.recordBtn.disabled = true;
+  el.recordBtn.textContent = 'מקליטים...';
+  setStatus('מקליטים את הציור מההתחלה. הווידאו יורד בסוף.');
+  rec.start(250);
+  startDrawing(true);
+}
+function finishRecording() {
+  const rec = play.recorder;
+  if (rec && rec.state === 'recording') setTimeout(() => rec.state === 'recording' && rec.stop(), 900); // hold the last frame
+}
+el.recordBtn.addEventListener('click', () => { if (!play.recorder) recordDrawing(); });
 
 /* ---------------- Saving to the archive ---------------- */
 async function saveWork() {

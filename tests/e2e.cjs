@@ -122,6 +122,26 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
   await page.waitForTimeout(400);
   await page.screenshot({ path: path.join(OUT, '03a2-wrap-cloud.png') });
 
+  // Drawing the work from the first line to the last
+  ok(await page.locator('#anim').isVisible(), 'animation controls appear for a line sculpture');
+  ok(/\/ 0:[1-3]\d/.test(await page.locator('#animTime').innerText()), 'animation has a real duration');
+  await page.locator('#scrub').fill('300');
+  await page.waitForTimeout(300);
+  ok(await page.locator('#playBtn').innerText() === 'המשך', 'scrubbing pauses mid-drawing');
+  ok(await page.locator('#annotation.hidden-while-drawing').count() === 1, 'annotation steps aside while drawing');
+  await page.screenshot({ path: path.join(OUT, '03a3-drawing.png') });
+  await page.click('#playBtn');
+  await page.waitForTimeout(1200);
+  ok(Number(await page.locator('#scrub').inputValue()) > 300, 'play continues the drawing');
+  ok(await page.locator('#playBtn').innerText() === 'השהיה', 'play button turns into pause');
+  await page.click('#playBtn');
+  await page.locator('#scrub').fill('1000');
+  await page.waitForTimeout(300);
+  ok(await page.locator('#playBtn').innerText() === 'ציור מההתחלה', 'at the end it offers to draw from the start');
+  [dl] = await Promise.all([page.waitForEvent('download', { timeout: 90000 }), page.click('#recordBtn')]);
+  const video = path.join(OUT, 'drawing.webm'); await dl.saveAs(video);
+  ok(fs.statSync(video).size > 50000 && /\.webm$/.test(dl.suggestedFilename()), `drawing is saved as a video (${fs.statSync(video).size} bytes, ${dl.suggestedFilename()})`);
+
   // Save to the archive
   ok(await page.locator('#saveBox').isVisible(), 'save appears once there is a sculpture');
   await page.fill('#workName', 'בית בקו');

@@ -82,19 +82,25 @@ export function liftStrokes(strokes, map, heightAt, toWorld, opts = {}) {
   if (!continuous || all.length < 2) return all.map((p) => chaikin(p, 2));
 
   // Greedy chain: always continue to the nearest free stroke end, reversing it if needed.
-  const left = all.slice();
-  const order = [left.shift()];
-  while (left.length) {
-    const tail = order[order.length - 1].at(-1);
-    let best = 0, flip = false, bd = Infinity;
-    left.forEach((s, i) => {
-      const d0 = dist3(tail, s[0]), d1 = dist3(tail, s.at(-1));
-      if (d0 < bd) { bd = d0; best = i; flip = false; }
-      if (d1 < bd) { bd = d1; best = i; flip = true; }
-    });
-    const next = left.splice(best, 1)[0];
-    order.push(flip ? next.slice().reverse() : next);
-  }
+  // The drawn strokes come first and the wrapping after, so the thread reads (and animates)
+  // as drawing first, then winding the volume around it.
+  const chain = (items, order) => {
+    const left = items.slice();
+    if (!order.length && left.length) order.push(left.shift());
+    while (left.length) {
+      const tail = order[order.length - 1].at(-1);
+      let best = 0, flip = false, bd = Infinity;
+      left.forEach((s, i) => {
+        const d0 = dist3(tail, s[0]), d1 = dist3(tail, s.at(-1));
+        if (d0 < bd) { bd = d0; best = i; flip = false; }
+        if (d1 < bd) { bd = d1; best = i; flip = true; }
+      });
+      const next = left.splice(best, 1)[0];
+      order.push(flip ? next.slice().reverse() : next);
+    }
+    return order;
+  };
+  const order = chain(extra, chain(lifted, []));
 
   // Connectors wind around the back of the body, so the thread wraps the form like yarn.
   const back = Math.max(zmax, 0.05) * 1.1;
@@ -171,6 +177,10 @@ export function wrapLoops(a, zAt, toW, opts = {}) {
  */
 export function tubeMesh(paths, radius, radial = 8) {
   const pos = [], idx = [], wt = [];
+  // Timeline for drawing the thread: after each segment, how many indices are visible,
+  // the time spent so far (drawn line slow like a pen, thread and wrapping faster), and the tip.
+  const tlEnd = [], tlTime = [], tlTip = [];
+  let clock = 0;
   let total = 0;
   for (const raw of paths) {
     const P = dedupe(raw);
@@ -194,9 +204,14 @@ export function tubeMesh(paths, radius, radial = 8) {
       }
     }
     const ring = (i, j) => base + i * radial + (j % radial);
-    for (let i = 0; i < n - 1; i++) for (let j = 0; j < radial; j++) {
-      const a = ring(i, j), b = ring(i, j + 1), c = ring(i + 1, j), d = ring(i + 1, j + 1);
-      idx.push(a, b, c, b, d, c);
+    for (let i = 0; i < n - 1; i++) {
+      for (let j = 0; j < radial; j++) {
+        const a = ring(i, j), b = ring(i, j + 1), c = ring(i + 1, j), d = ring(i + 1, j + 1);
+        idx.push(a, b, c, b, d, c);
+      }
+      const drawn = Math.min(P[i][3] ?? 1, P[i + 1][3] ?? 1) >= 0.9;
+      clock += dist3(P[i], P[i + 1]) / (drawn ? 1 : 2.6);
+      tlEnd.push(idx.length); tlTime.push(clock); tlTip.push(P[i + 1][0], P[i + 1][1], P[i + 1][2]);
     }
     const s0 = pos.length / 3; pos.push(P[0][0], P[0][1], P[0][2]); wt.push(P[0][3] ?? 1);
     const s1 = pos.length / 3; pos.push(P[n - 1][0], P[n - 1][1], P[n - 1][2]); wt.push(P[n - 1][3] ?? 1);
@@ -204,8 +219,13 @@ export function tubeMesh(paths, radius, radial = 8) {
       idx.push(s0, ring(0, j + 1), ring(0, j));
       idx.push(s1, ring(n - 1, j), ring(n - 1, j + 1));
     }
+    tlEnd[tlEnd.length - 1] = idx.length; // caps appear with the last segment of the path
   }
-  return { positions: new Float32Array(pos), indices: new Uint32Array(idx), weight: new Float32Array(wt), triangles: idx.length / 3, length: total };
+  return {
+    positions: new Float32Array(pos), indices: new Uint32Array(idx), weight: new Float32Array(wt),
+    triangles: idx.length / 3, length: total,
+    timeline: { end: Uint32Array.from(tlEnd), time: Float32Array.from(tlTime), tip: Float32Array.from(tlTip), duration: clock },
+  };
 }
 
 /* ---------- skeleton and tracing ---------- */

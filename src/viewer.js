@@ -265,6 +265,9 @@ export function createStage(container, { onFrame } = {}) {
     if (!holder) return null;
     const subject = holder.children[0];
     const was = mode;
+    const overlays = [];
+    subject.traverse((o) => { if (o.isSprite) overlays.push(o); }); // the pen tip is not part of the work
+    overlays.forEach((o) => o.parent.remove(o));
     applyMode('source'); // export the real materials, not the view mode
     for (const m of info.meshes) { const v = viewState.get(m); if (v && v.edges) m.remove(v.edges); }
     try {
@@ -276,6 +279,7 @@ export function createStage(container, { onFrame } = {}) {
       return new Blob([data], { type: 'model/gltf-binary' });
     } finally {
       for (const m of info.meshes) { const v = viewState.get(m); if (v && v.edges) m.add(v.edges); }
+      overlays.forEach((o) => subject.add(o));
       applyMode(was);
     }
   }
@@ -296,6 +300,7 @@ export function createStage(container, { onFrame } = {}) {
   return {
     setObject, loadUrl, clear, exportFile, snapshot,
     setMode: applyMode,
+    canvas: renderer.domElement,
     setBackdrop(next) { backdrop = next; applyMode(mode); },
     setLight,
     setSpin(on) { controls.autoRotate = on; },

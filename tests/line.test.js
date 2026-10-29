@@ -120,3 +120,23 @@ test('wrap: strokes plus wrapping make one closed printable thread', () => {
   assert.ok(isClosed(m.indices));
   assert.equal(m.positions.length % 3, 0);
 });
+
+test('timeline: drawing the thread reveals it in order and ends with the whole tube', () => {
+  const paths = [[[0, 0, 0, 1], [1, 0, 0, 1], [1, 1, 0, 0.4], [0, 1, 0, 0.4]]];
+  const m = tubeMesh(paths, 0.02, 8);
+  const t = m.timeline;
+  assert.equal(t.end.length, 3);
+  for (let i = 1; i < t.end.length; i++) { assert.ok(t.end[i] > t.end[i - 1]); assert.ok(t.time[i] > t.time[i - 1]); }
+  assert.equal(t.end.at(-1), m.indices.length, 'last step shows every triangle, caps included');
+  assert.ok(Math.abs(t.time[0] - 1) < 1e-6 && t.time[1] - t.time[0] < 0.5, 'drawn line is slow, thread is fast');
+  assert.deepEqual(Array.from(t.tip.slice(-3)), [0, 1, 0], 'tip ends at the last point');
+});
+
+test('lift: drawn strokes come before the wrapping in the thread', () => {
+  const s = [[[10, 10], [60, 10]], [[10, 60], [60, 60]]];
+  const loop = [[0.5, 0.5, 0.1, 0.5], [0.6, 0.5, -0.1, 0.5], [0.5, 0.5, 0.1, 0.5]];
+  const path = liftStrokes(s, { sw: 100, sh: 100 }, () => 0.1, (u, v) => [u, v], { continuous: true, extra: [loop] })[0];
+  const firstWrap = path.findIndex((p) => p[3] === 0.5);
+  const lastDrawn = path.map((p) => p[3]).lastIndexOf(1);
+  assert.ok(firstWrap > lastDrawn, 'wrapping starts after the last drawn stroke');
+});

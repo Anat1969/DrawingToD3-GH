@@ -69,6 +69,15 @@
             <button type="button" class="toggle" id="thirdsBtn" aria-pressed="false">רשת שלישים</button>
             <button type="button" class="toggle" id="spinBtn" aria-pressed="true">סיבוב</button>
           </div>
+          <div class="anim" id="anim" role="group" aria-label="הנפשת הציור" hidden>
+            <button type="button" class="btn" id="playBtn">ציור מההתחלה</button>
+            <label class="scrub">
+              <span class="sr-only">התקדמות הציור</span>
+              <input type="range" id="scrub" min="0" max="1000" value="1000">
+            </label>
+            <output id="animTime" dir="ltr">0:00</output>
+            <button type="button" class="btn quiet" id="recordBtn">שמירת וידאו</button>
+          </div>
         </section>
 
         <!-- The workbench: upload, convert, download. -->
