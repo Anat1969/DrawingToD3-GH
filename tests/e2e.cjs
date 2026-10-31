@@ -331,6 +331,26 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
   await page.waitForFunction(() => !document.querySelector('[data-for="image"].panel').hidden);
   ok(await page.locator('#stage.paper').count() === 0 && /מודל לדוגמה/.test(await page.locator('#factSource').innerText()), 'back to the studio: the drawing tools step aside');
 
+  // 4d. A landscape is laid out in depth, not inflated (Anat's beach with a boat, 31.10.2026)
+  await page.setInputFiles('#file', path.join(__dirname, 'fixtures', 'boat.jpg'));
+  await page.waitForSelector('#preview:not([hidden])');
+  await page.click('#convertBtn');
+  const scene = await page.waitForFunction(() => document.querySelector('#factSource').textContent === 'פיסול קווי, נוף', null, { timeout: 30000 }).then(() => true, () => false);
+  ok(scene, 'a beach is read as a landscape' + (scene ? '' : ': ' + await page.locator('#factSource').innerText()));
+  ok(/זוהה נוף/.test(await page.locator('#readingNote').innerText()), 'the note says a landscape was found and where its horizon is');
+  const sz = (await page.locator('#factSize').innerText()).split('×').map((v) => Number(v.trim()));
+  ok(sz[2] === 100, `the landscape is deepest along the view: ${sz.join(' × ')}`);
+  ok(await page.locator('#factClosed').innerText() === 'כן', 'the landscape thread is a closed body too');
+  await page.click('#frontBtn');
+  await page.waitForTimeout(700);
+  await page.screenshot({ path: path.join(OUT, '11a-scene-front.png') });
+  await page.click('#spinBtn').catch(() => {});
+  await page.click('[data-reading="object"]');
+  await page.waitForFunction(() => document.querySelector('#factSource').textContent === 'פיסול קווי', null, { timeout: 30000 });
+  ok(/נקרא כדבר/.test(await page.locator('#readingNote').innerText()), 'it can be read as an object instead');
+  await page.click('[data-reading="auto"]');
+  await page.click('#resetBtn');
+
   // 5. Unconfigured server message (AI engine)
   mode = 'unconfigured';
   await page.click('label:has(input[name="engine"][value="ai"])');
@@ -404,7 +424,7 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
 
   // 8. Method
   await page.click('a[data-route="method"]');
-  ok(await page.locator('.method li').count() === 10, 'method page renders');
+  ok(await page.locator('.method li').count() === 11, 'method page renders');
   await page.screenshot({ path: path.join(OUT, '08-method.png') });
 
   // 9. Local 3D file

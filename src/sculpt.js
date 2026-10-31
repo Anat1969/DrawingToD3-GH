@@ -2,6 +2,7 @@
 // either the inflated body or the line sculpture with Three.js.
 import * as THREE from 'three';
 import { analysePixels, buildSculpt, heightField, isClosed, DEFAULTS } from './sculpt-core.js';
+import { findHorizon, isLandscape, sceneCamera, standingThings } from './scene-core.js';
 import { extractStrokes, liftStrokes, tubeMesh, wrapLoops, depthScale, wireRadius, threadThroughInk, stitchLoops, makeRouter, LINE_DEFAULTS } from './line-core.js';
 
 export { DEFAULTS, LINE_DEFAULTS };
@@ -35,13 +36,17 @@ export async function prepareSculpt(src) {
   const img = await loadImage(src);
   const small = draw(img, GRID);
   const pixels = small.getContext('2d').getImageData(0, 0, small.width, small.height);
-  const analysis = analysePixels(pixels);
+  // A picture with no paper around it (a landscape) has no silhouette: keep the reason, the
+  // landscape reading does not need one.
+  let analysis = null, analysisError = null;
+  try { analysis = analysePixels(pixels); } catch (err) { analysisError = err; }
+  const horizon = findHorizon(pixels);
   const strokeCanvas = draw(img, STROKES);
   const strokeImage = strokeCanvas.getContext('2d').getImageData(0, 0, strokeCanvas.width, strokeCanvas.height);
   const texture = new THREE.CanvasTexture(draw(img, TEXTURE));
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
-  return { analysis, pixels, strokeImage, strokeCache: new Map(), strokeSize: { sw: strokeCanvas.width, sh: strokeCanvas.height }, texture };
+  return { analysis, analysisError, horizon, pixels, strokeImage, strokeCache: new Map(), strokeSize: { sw: strokeCanvas.width, sh: strokeCanvas.height }, texture };
 }
 
 /** Strokes for a sensitivity, cached: moving other sliders does not re-trace the drawing. */
@@ -49,6 +54,118 @@ function strokesFor(prepared, sensitivity) {
   const key = Math.round((sensitivity ?? LINE_DEFAULTS.sensitivity) * 20);
   if (!prepared.strokeCache.has(key)) prepared.strokeCache.set(key, extractStrokes(prepared.strokeImage, { sensitivity: key / 20 }));
   return prepared.strokeCache.get(key);
+}
+
+/**
+ * A landscape laid out in depth: the ground recedes from the bottom of the picture to the
+ * horizon, the sky stands as a back wall, and things (a boat) stand upright where they touch
+ * the ground. Seen from the picture's own camera (the front view) it gives the picture back;
+ * walking round it shows the sea and the beach spread into the distance.
+ */
+function sceneSculpture(prepared, opts) {
+  const { sw, sh } = prepared.strokeSize;
+  const strokes = strokesFor(prepared, opts.sensitivity);
+  if (!strokes.length) throw Object.assign(new Error('no_lines'), { code: 'no_lines' });
+  const vh = prepared.horizon.row;
+  const cam = sceneCamera(vh, sw / sh, opts.depth ?? LINE_DEFAULTS.depth);
+  if (!strokes.things) strokes.things = standingThings(strokes.ink, sw, sh, vh);
+  const { label, things } = strokes.things;
+  // A standing thing has a little body: its lines bulge toward the viewer from its outline.
+  if (!strokes.bulge) strokes.bulge = insideDistance(label, things, sw, sh);
+  const bulge = strokes.bulge;
+  const at = (x, y) => {
+    const xi = Math.max(0, Math.min(sw - 1, Math.round(x))), yi = Math.max(0, Math.min(sh - 1, Math.round(y)));
+    const p = yi * sw + xi, id = label[p];
+    const u = x / sh, v = y / sh;
+    if (id >= 0 && things[id].standing) {
+      const q = cam.standing(u, v, things[id].contact);
+      q[2] += cam.worldSize(bulge[p] / sh, -q[2]) * 0.8;
+      return q;
+    }
+    return cam.ground(u, v);
+  };
+  // Far lines are drawn as thick as near ones look: the weight follows the depth.
+  const weightAt = (z) => Math.max(1, Math.min(6, -z / cam.near));
+  const continuous = opts.continuous ?? LINE_DEFAULTS.continuous;
+  const lines2d = continuous && strokes.length > 1 ? [threadFor(strokes).path] : strokes;
+  const jump = cam.near * 0.35;
+  const paths = lines2d.map((l) => layOnGround(l.map(([x, y]) => { const q = at(x, y); return [q[0], q[1], q[2], weightAt(q[2])]; }), jump));
+  const thickness = Math.max(0, Math.min(1, opts.thickness ?? LINE_DEFAULTS.thickness));
+  const radius = wireRadius(strokes.lineWidth ?? 3, cam.near / (cam.f * sh), thickness);
+  const tube = tubeMesh(paths, radius, 8);
+  if (!tube.triangles) throw Object.assign(new Error('no_lines'), { code: 'no_lines' });
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(tube.positions, 3));
+  g.setIndex(new THREE.BufferAttribute(tube.indices, 1));
+  g.computeVertexNormals();
+  const wire = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0x1a1611, roughness: 0.4, metalness: 0.3 }));
+  wire.name = 'line';
+  const group = new THREE.Group();
+  group.add(wire);
+  const cloud = opts.cloud === true ? 0.6 : opts.cloud === false ? 0 : (opts.cloud ?? LINE_DEFAULTS.cloud);
+  const cloudPoints = cloud > 0 ? sceneCloud(prepared, cam, at, cloud) : null;
+  if (cloudPoints) group.add(cloudPoints);
+  return {
+    object: group, closed: isClosed(tube.indices), lines: strokes.length, loops: 0,
+    continuous: paths.length === 1 && strokes.length > 1,
+    reading: 'scene', horizon: vh, standing: things.filter((t) => t.standing).length,
+    viewpoint: cam.viewpoint,
+    animation: drawingAnimation(group, g, tube.timeline, cloudPoints, radius),
+  };
+}
+
+// Where the thread passes between two depths (the edge of the boat against the sea behind it),
+// it goes down to the ground, along the sand or the water, and back up: one thread lying on the
+// beach, instead of a line flying through the air. From the front these joins look short.
+function layOnGround(path, jump) {
+  const out = [];
+  for (let i = 0; i < path.length; i++) {
+    const b = path[i];
+    const a = out.at(-1);
+    if (a && Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]) > jump) {
+      const steps = (p, q, n) => { for (let k = 1; k < n; k++) { const f = k / n; out.push([p[0] + (q[0] - p[0]) * f, p[1] + (q[1] - p[1]) * f, p[2] + (q[2] - p[2]) * f, p[3] + (q[3] - p[3]) * f]); } };
+      const a0 = [a[0], 0, a[2], a[3]], b0 = [b[0], 0, b[2], b[3]];
+      const n = (p, q) => Math.max(2, Math.ceil(Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]) / (jump * 0.25)));
+      if (a[1] > 1e-6) { steps(a, a0, n(a, a0)); out.push(a0); }
+      steps(a0, b0, n(a0, b0));
+      if (b[1] > 1e-6) { out.push(b0); steps(b0, b, n(b0, b)); }
+    }
+    out.push(b);
+  }
+  return out;
+}
+
+// Distance (pixels) from the outline of each standing thing, inside it: its bulge.
+function insideDistance(label, things, W, H) {
+  const m = new Uint8Array(W * H);
+  for (let p = 0; p < W * H; p++) m[p] = label[p] >= 0 && things[label[p]].standing ? 1 : 0;
+  return chamfer2(m, W, H);
+}
+
+// The landscape's colour, sprayed where it lies: sea and sand on the receding ground, the sky
+// on the back wall, the boat's colour on the boat. A puff covers the same share of the picture
+// near or far, so far puffs are larger in the world.
+function sceneCloud(prepared, cam, at, amount) {
+  const { width: w, height: hh, data } = prepared.pixels;
+  const { sw, sh } = prepared.strokeSize;
+  const pos = [], tint = [], size = [], alpha = [];
+  let seed = 7331;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const target = Math.round(2500 + 6500 * amount);
+  for (let k = 0; k < 60000 && size.length < target; k++) {
+    const x = rnd() * (w - 1), y = rnd() * (hh - 1), i = (Math.round(y) * w + Math.round(x)) * 4;
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    const mx = Math.max(r, g, b), sat = mx ? (mx - Math.min(r, g, b)) / mx : 0;
+    if (mx > 238 && sat < 0.06) continue; // bare paper
+    const sx = (x / (w - 1)) * (sw - 1), sy = (y / (hh - 1)) * (sh - 1);
+    const q = at(sx + (rnd() - 0.5) * 2, sy + (rnd() - 0.5) * 2);
+    pos.push(q[0], q[1], q[2]);
+    tint.push(r / 255, g / 255, b / 255);
+    const d = -q[2];
+    size.push(cam.worldSize(0.012 + Math.pow(rnd(), 2) * 0.04, d) * 2.2);
+    alpha.push((0.12 + Math.pow(rnd(), 2) * 0.3) * (0.5 + amount));
+  }
+  return size.length >= 20 ? cloudPoints(pos, tint, size, alpha) : null;
 }
 
 /** One thread routed along the ink (cached with the strokes): joins run on drawn lines. */
@@ -104,7 +221,15 @@ export function sculptMesh(prepared, opts) {
 }
 
 /** Line sculpture: the ink as one wire in space, colour as transparent smoke. */
+/** How the picture is read: 'object' (inflated and wrapped) or 'scene' (laid out in depth). */
+export function readingOf(prepared, choice = 'auto') {
+  if (choice === 'object' || choice === 'scene') return choice;
+  return isLandscape(prepared.horizon) || !prepared.analysis ? 'scene' : 'object';
+}
+
 export function lineSculpture(prepared, opts) {
+  if (readingOf(prepared, opts.reading) === 'scene') return sceneSculpture(prepared, opts);
+  if (!prepared.analysis) throw prepared.analysisError;
   const a = prepared.analysis;
   const { W, pad, w0, h0 } = a;
   const unit = 2 / Math.max(w0, h0);
@@ -293,6 +418,11 @@ function colourCloud(prepared, sample, zScale, gxy, toWorld, amount) {
     alpha.push((0.05 + Math.pow(rnd(), 3) * 0.22 + share * 0.18) * (0.5 + amount)); // denser where colour leads
   }
   if (size.length < 20) return null;
+  return cloudPoints(pos, tint, size, alpha);
+}
+
+/** Soft airbrush puffs: positions, colours, world sizes and opacities. */
+function cloudPoints(pos, tint, size, alpha) {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('tint', new THREE.Float32BufferAttribute(tint, 3));
@@ -306,7 +436,8 @@ function colourCloud(prepared, sample, zScale, gxy, toWorld, amount) {
       void main() {
         vTint = tint; vAlpha = alpha;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = size * uScale / max(0.001, -mv.z);
+        float k = length(modelMatrix[0].xyz); // the stage scales the work: puffs scale with it
+        gl_PointSize = size * k * uScale / max(0.001, -mv.z);
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: `
