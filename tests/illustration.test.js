@@ -64,3 +64,16 @@ test('brush illustration: colour stripes are lines too (zebras in magenta and bl
   assert.ok(half(true) > 150 && half(false) > 150, `both animals are read (${half(true)} / ${half(false)} points)`);
   assert.ok(withBands.lineWidth <= Z / 170 + 1e-9, 'a brush stripe does not make the wire heavy');
 });
+
+test('painting with no paper around it (faces in colour planes): read, joined along its lines', () => {
+  const FW = 300, FH = 335;
+  const frgb = zlib.gunzipSync(fs.readFileSync(new URL('./fixtures/faces-300x335.rgb.gz', import.meta.url)));
+  const fd = new Uint8ClampedArray(FW * FH * 4);
+  for (let p = 0; p < FW * FH; p++) { fd.set(frgb.subarray(p * 3, p * 3 + 3), p * 4); fd[p * 4 + 3] = 255; }
+  const st = extractStrokes({ width: FW, height: FH, data: fd }, { sensitivity: 0.6 });
+  const drawn = st.reduce((a, s) => a + len(s), 0);
+  assert.ok(st.length > 50 && drawn > 3000, `${st.length} lines, ${Math.round(drawn)}px`);
+  const t = threadThroughInk(st);
+  const off = t.offInk / (t.drawn + t.offInk);
+  assert.ok(off < 0.12, `${(off * 100).toFixed(1)}% of the thread is off the painting's lines (was 14%)`);
+});

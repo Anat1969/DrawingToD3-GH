@@ -2,7 +2,7 @@
 // either the inflated body or the line sculpture with Three.js.
 import * as THREE from 'three';
 import { analysePixels, buildSculpt, heightField, isClosed, DEFAULTS } from './sculpt-core.js';
-import { extractStrokes, liftStrokes, tubeMesh, wrapLoops, depthScale, wireRadius, threadThroughInk, stitchLoops, LINE_DEFAULTS } from './line-core.js';
+import { extractStrokes, liftStrokes, tubeMesh, wrapLoops, depthScale, wireRadius, threadThroughInk, stitchLoops, makeRouter, LINE_DEFAULTS } from './line-core.js';
 
 export { DEFAULTS, LINE_DEFAULTS };
 const GRID = 200;      // body analysis resolution (longest side)
@@ -57,6 +57,38 @@ function threadFor(strokes) {
   return strokes.thread;
 }
 
+/**
+ * The drawn thread, then each stitched outline, as one path. Every outline starts at its point
+ * nearest to where the thread is, and the way there runs along the drawing's ink on the front
+ * surface, so no straight join cuts across a face (31.10.2026, faces painting).
+ */
+function joinAlongInk(thread, loops, strokes, size, heightAt, k, unit, w0, h0) {
+  const { sw, sh } = size;
+  const route = makeRouter(strokes);
+  const toPx = (X, Y) => [((X / unit + w0 / 2) / (w0 - 1)) * (sw - 1), ((h0 / 2 - Y / unit) / (h0 - 1)) * (sh - 1)];
+  const lift = ([x, y]) => {
+    const u = x / (sw - 1), v = y / (sh - 1);
+    return [(u * (w0 - 1) - w0 / 2) * unit, (h0 / 2 - v * (h0 - 1)) * unit, heightAt(u, v) * k, 1];
+  };
+  const path = thread.slice();
+  const left = loops.slice();
+  while (left.length) {
+    const e = path.at(-1);
+    let bi = 0, bj = 0, bd = Infinity;
+    left.forEach((l, i) => l.forEach((q, j) => {
+      const d = (q[0] - e[0]) ** 2 + (q[1] - e[1]) ** 2;
+      if (d < bd) { bd = d; bi = i; bj = j; }
+    }));
+    const l = left.splice(bi, 1)[0];
+    const loop = l.slice(bj).concat(l.slice(0, bj)); // an outline is closed: start where it is nearest
+    const a = toPx(e[0], e[1]), b = toPx(loop[0][0], loop[0][1]);
+    const r = Math.hypot(b[0] - a[0], b[1] - a[1]) > 3 ? route(a, b) : null;
+    if (r) for (let i = 1; i < r.length - 1; i++) path.push(lift(r[i]));
+    for (const q of loop) path.push(q);
+  }
+  return path;
+}
+
 /** Inflated closed body. */
 export function sculptMesh(prepared, opts) {
   const m = buildSculpt(prepared.analysis, opts);
@@ -105,7 +137,9 @@ export function lineSculpture(prepared, opts) {
   const continuous = opts.continuous ?? LINE_DEFAULTS.continuous;
   const thread = continuous && strokes.length > 1 ? threadFor(strokes) : null;
   const drawnPaths = thread ? [thread.path] : strokes;
-  const paths = liftStrokes(drawnPaths, prepared.strokeSize, heightAt, toWorld, { ...opts, extra: loops });
+  const paths = thread && loops.length
+    ? [joinAlongInk(liftStrokes(drawnPaths, prepared.strokeSize, heightAt, toWorld, { ...opts, extra: [] })[0], loops, strokes, prepared.strokeSize, heightAt, k, unit, w0, h0)]
+    : liftStrokes(drawnPaths, prepared.strokeSize, heightAt, toWorld, { ...opts, extra: loops });
   const tube = tubeMesh(paths, radius, 8);
   if (!tube.triangles) throw Object.assign(new Error('no_lines'), { code: 'no_lines' });
 

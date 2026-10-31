@@ -72,6 +72,17 @@ export function analysePixels(img) {
 
   // 5. Keep the meaningful parts: drop specks smaller than 1.5% of the largest part.
   mask = keepLargeComponents(mask, W, H, 0.015);
+  // 5b. Opening: splashes, drips and thin hair-like protrusions are not the body. Erode, keep
+  //     the large parts, and grow back: the outline follows the figure, not every splash
+  //     (31.10.2026, watercolour zebras came out as a block).
+  const r = Math.max(1, Math.round(Math.max(w0, h0) / 50));
+  let opened = mask;
+  for (let i = 0; i < r; i++) opened = erode(opened, W, H);
+  opened = keepLargeComponents(opened, W, H, 0.03);
+  for (let i = 0; i < r; i++) opened = dilate(opened, W, H);
+  let kept = 0, before = 0;
+  for (let p = 0; p < N; p++) { opened[p] &= mask[p]; kept += opened[p]; before += mask[p]; }
+  if (kept > before * 0.5) mask = opened; // never lose the subject itself (thin line drawings)
 
   let area = 0;
   for (let p = 0; p < N; p++) area += mask[p];
