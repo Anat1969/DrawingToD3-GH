@@ -353,6 +353,19 @@ export function createStage(container, { onFrame } = {}) {
     /** Straight on, the way the drawing was made: the view to judge resemblance from. */
     viewFront() {
       if (!info) return;
+      if (info.viewpoint && holder) {
+        // A landscape: back to the camera that made the picture.
+        const subject = holder.children[0];
+        subject.updateWorldMatrix(true, false);
+        const pos = subject.localToWorld(new THREE.Vector3(...info.viewpoint.position));
+        const tgt = subject.localToWorld(new THREE.Vector3(...info.viewpoint.target));
+        controls.autoRotate = false;
+        controls.minDistance = 0;
+        controls.target.copy(tgt);
+        camera.position.copy(pos);
+        controls.update();
+        return;
+      }
       const c = info.sphere.center;
       const dist = (info.sphere.radius / Math.sin(THREE.MathUtils.degToRad(camera.fov) / 2)) * 1.12;
       controls.autoRotate = false;

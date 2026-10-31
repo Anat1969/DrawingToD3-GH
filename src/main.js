@@ -74,6 +74,7 @@ function showSample() {
 let ann = null;
 function annText(info) {
   const [x, y, z] = info.proportion;
+  if (info.reading === 'scene') return `<b>נוף:</b> אופק ב-<span dir="ltr">${Math.round(info.horizon * 100)}%</span> מהגובה · <b>עומדים:</b> <span dir="ltr">${info.standing}</span><br><b>קווים:</b> <span dir="ltr">${info.lines}</span>${info.continuous ? ' · חוט אחד' : ''}`;
   if (info.lines) return `<b>קווים:</b> <span dir="ltr">${info.lines}</span> · <b>ליפופים:</b> <span dir="ltr">${info.loops || 0}</span>${info.continuous ? ' · חוט אחד' : ''}<br><b>פרופורציה:</b> <span dir="ltr">${x} × ${y} × ${z}</span>`;
   return `<b>פרופורציה:</b> <span dir="ltr">${x} × ${y} × ${z}</span><br><b>משולשים:</b> <span dir="ltr">${info.tris.toLocaleString('he-IL')}</span>`;
 }
@@ -312,7 +313,7 @@ async function sculptNow() {
 
 function params() {
   return state.engine === 'line'
-    ? { depth: el.depth.value / 100, thickness: el.thickness.value / 100, wrap: el.wrap.value / 100, sensitivity: el.sensitivity.value / 100, cloud: el.cloud.value / 100, continuous: el.continuous.checked }
+    ? { reading: state.reading, depth: el.depth.value / 100, thickness: el.thickness.value / 100, wrap: el.wrap.value / 100, sensitivity: el.sensitivity.value / 100, cloud: el.cloud.value / 100, continuous: el.continuous.checked }
     : { volume: el.volume.value / 100, line: el.lineRelief.value / 100 };
 }
 
@@ -323,6 +324,7 @@ function setParams(p = {}) {
   set(el.volume, el.volumeVal, p.volume);
   set(el.lineRelief, el.lineVal, p.line);
   if (typeof p.continuous === 'boolean') el.continuous.checked = p.continuous;
+  setReading(['auto', 'object', 'scene'].includes(p.reading) ? p.reading : 'auto');
   set(el.wrap, el.wrapVal, p.wrap);
   set(el.sensitivity, el.sensitivityVal, p.sensitivity);
   set(el.cloud, el.cloudVal, typeof p.smoke === 'boolean' ? (p.smoke ? 0.6 : 0) : p.cloud); // works saved before the cloud slider
@@ -337,7 +339,8 @@ function renderSculpt(keepView) {
     state.anim = r.animation;
     play.p = 1;
     showProgress();
-    info = stage.setObject(r.object, { source: 'פיסול קווי', closed: r.closed, lines: r.lines, loops: r.loops, continuous: r.continuous }, { keepView });
+    info = stage.setObject(r.object, { source: r.reading === 'scene' ? 'פיסול קווי, נוף' : 'פיסול קווי', closed: r.closed, lines: r.lines, loops: r.loops, continuous: r.continuous, reading: r.reading, horizon: r.horizon, standing: r.standing, viewpoint: r.viewpoint }, { keepView });
+    showReading(r);
   } else {
     stopDrawing(true);
     state.anim = null;
@@ -360,6 +363,24 @@ for (const [input, out] of [[el.volume, el.volumeVal], [el.lineRelief, el.lineVa
   input.addEventListener('input', () => { out.textContent = input.value; liveUpdate(); });
 }
 el.continuous.addEventListener('change', liveUpdate);
+
+/* ---------------- Reading: an object, or a landscape laid out in depth ---------------- */
+state.reading = 'auto';
+function setReading(next) {
+  state.reading = next;
+  document.querySelectorAll('[data-reading]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.reading === next)));
+}
+document.querySelectorAll('[data-reading]').forEach((b) => b.addEventListener('click', () => {
+  setReading(b.dataset.reading);
+  if (state.phase === 'sculpted' && state.sculpt && state.engine === 'line') renderSculpt(false);
+}));
+function showReading(r) {
+  const note = document.getElementById('readingNote');
+  const auto = state.reading === 'auto';
+  note.textContent = r.reading === 'scene'
+    ? `${auto ? 'זוהה נוף' : 'נקרא כנוף'}: קו אופק ב-${Math.round(r.horizon * 100)}% מהגובה. הקרקע נפרשת לעומק, השמיים עומדים מאחור, ו${r.standing ? 'הדבר העומד' : 'כל מה שבתמונה'} ${r.standing ? 'עומד במקום שבו הוא נוגע בקרקע' : 'שוכב על הקרקע'}. "חזית" מחזירה למבט של הציור.`
+    : `${auto ? 'זוהה דבר' : 'נקרא כדבר'}: הגוף מנופח אל המתבונן, והחוט עוטף את המתאר.`;
+}
 
 /* ---------------- Drawing the work from the first line (animation) ---------------- */
 const play = { on: false, p: 1, last: 0, frame: 0, recorder: null };
