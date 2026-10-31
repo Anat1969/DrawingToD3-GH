@@ -191,6 +191,12 @@ el.spinBtn.addEventListener('click', () => {
   stage && stage.setSpin(on);
 });
 if (matchMedia('(prefers-reduced-motion: reduce)').matches) el.spinBtn.setAttribute('aria-pressed', 'false');
+// Front: the view the drawing was made from, to compare with it.
+document.getElementById('frontBtn').addEventListener('click', () => {
+  if (!stage) return;
+  stage.viewFront();
+  el.spinBtn.setAttribute('aria-pressed', 'false');
+});
 el.lightAngle.addEventListener('input', () => stage && stage.setLight(Number(el.lightAngle.value)));
 
 /* ---------------- Drawing input ---------------- */

@@ -2,7 +2,7 @@
 // either the inflated body or the line sculpture with Three.js.
 import * as THREE from 'three';
 import { analysePixels, buildSculpt, heightField, isClosed, DEFAULTS } from './sculpt-core.js';
-import { extractStrokes, liftStrokes, tubeMesh, wrapLoops, depthScale, LINE_DEFAULTS } from './line-core.js';
+import { extractStrokes, liftStrokes, tubeMesh, wrapLoops, depthScale, wireRadius, threadThroughInk, LINE_DEFAULTS } from './line-core.js';
 
 export { DEFAULTS, LINE_DEFAULTS };
 const GRID = 200;      // body analysis resolution (longest side)
@@ -51,6 +51,12 @@ function strokesFor(prepared, sensitivity) {
   return prepared.strokeCache.get(key);
 }
 
+/** One thread routed along the ink (cached with the strokes): joins run on drawn lines. */
+function threadFor(strokes) {
+  if (!strokes.thread) strokes.thread = threadThroughInk(strokes);
+  return strokes.thread;
+}
+
 /** Inflated closed body. */
 export function sculptMesh(prepared, opts) {
   const m = buildSculpt(prepared.analysis, opts);
@@ -83,7 +89,8 @@ export function lineSculpture(prepared, opts) {
 
   const strokes = strokesFor(prepared, opts.sensitivity);
   const thickness = Math.max(0, Math.min(1, opts.thickness ?? LINE_DEFAULTS.thickness));
-  const radius = 0.004 + 0.02 * thickness;
+  // The wire has the drawing's line weight (measured), scaled by the thickness slider.
+  const radius = opts.radius ?? wireRadius(strokes.lineWidth ?? 3, 2 / Math.max(prepared.strokeSize.sw, prepared.strokeSize.sh), thickness);
 
   // Wrapping loops lie on the same surface as the strokes (same depth scale), just outside it.
   const k = depthScale(opts.depth);
@@ -91,7 +98,11 @@ export function lineSculpture(prepared, opts) {
   const toWGrid = (gx, gy) => [(gx - pad - w0 / 2) * unit, (h0 / 2 - (gy - pad)) * unit];
   const loops = wrapLoops(a, zGrid, toWGrid, { wrap: opts.wrap, lift: radius * 0.6 });
 
-  const paths = liftStrokes(strokes, prepared.strokeSize, heightAt, toWorld, { ...opts, extra: loops });
+  // One thread: the strokes joined along the ink (a one-line drawing), then the wrapping.
+  const continuous = opts.continuous ?? LINE_DEFAULTS.continuous;
+  const thread = continuous && strokes.length > 1 ? threadFor(strokes) : null;
+  const drawnPaths = thread ? [thread.path] : strokes;
+  const paths = liftStrokes(drawnPaths, prepared.strokeSize, heightAt, toWorld, { ...opts, extra: loops });
   const tube = tubeMesh(paths, radius, 8);
   if (!tube.triangles) throw Object.assign(new Error('no_lines'), { code: 'no_lines' });
 
@@ -168,6 +179,36 @@ export function drawingAnimation(group, wireGeometry, tl, cloudPoints, radius) {
   return { duration, set };
 }
 
+// Two-pass chamfer distance (1, 1.4) to the nearest pixel outside the mask.
+function chamfer2(m, w, h) {
+  const d = new Float32Array(w * h);
+  for (let p = 0; p < w * h; p++) d[p] = m[p] ? 1e6 : 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const p = y * w + x;
+    if (!d[p]) continue;
+    if (x > 0) d[p] = Math.min(d[p], d[p - 1] + 1);
+    if (y > 0) d[p] = Math.min(d[p], d[p - w] + 1);
+    if (x > 0 && y > 0) d[p] = Math.min(d[p], d[p - w - 1] + 1.4);
+    if (x < w - 1 && y > 0) d[p] = Math.min(d[p], d[p - w + 1] + 1.4);
+  }
+  for (let y = h - 1; y >= 0; y--) for (let x = w - 1; x >= 0; x--) {
+    const p = y * w + x;
+    if (!d[p]) continue;
+    if (x < w - 1) d[p] = Math.min(d[p], d[p + 1] + 1);
+    if (y < h - 1) d[p] = Math.min(d[p], d[p + w] + 1);
+    if (x < w - 1 && y < h - 1) d[p] = Math.min(d[p], d[p + w + 1] + 1.4);
+    if (x > 0 && y < h - 1) d[p] = Math.min(d[p], d[p + w - 1] + 1.4);
+  }
+  return d;
+}
+
+// A wash is clearly coloured: relative saturation, so skin, paper and pencil grey stay clear
+// (a skin tone is about 0.28, the pink and orange washes 0.8 and more).
+function isWash(d, i) {
+  const mx = Math.max(d[i], d[i + 1], d[i + 2]);
+  return mx > 40 && (mx - Math.min(d[i], d[i + 1], d[i + 2])) / mx >= 0.36;
+}
+
 // Colour as sprayed pigment in the air: soft round puffs of different sizes and transparencies,
 // coloured by the local average of the wash, spread through the depth of the body.
 function colourCloud(prepared, sample, zScale, gxy, toWorld, amount) {
@@ -177,8 +218,7 @@ function colourCloud(prepared, sample, zScale, gxy, toWorld, amount) {
     let r = 0, g = 0, b = 0, n = 0;
     for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
       const xx = Math.min(w - 1, Math.max(0, x + dx)), yy = Math.min(hh - 1, Math.max(0, y + dy)), i = (yy * w + xx) * 4;
-      const sat = Math.max(data[i], data[i + 1], data[i + 2]) - Math.min(data[i], data[i + 1], data[i + 2]);
-      if (sat < 22) continue;
+      if (!isWash(data, i)) continue;
       r += data[i]; g += data[i + 1]; b += data[i + 2]; n++;
     }
     return n ? [r / n / 255, g / n / 255, b / n / 255] : null;
@@ -186,12 +226,23 @@ function colourCloud(prepared, sample, zScale, gxy, toWorld, amount) {
   const pos = [], tint = [], size = [], alpha = [];
   let seed = 4242;
   const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-  const target = Math.round(250 + 900 * amount);
-  for (let k = 0; k < 40000 && size.length < target; k++) {
+  // As many puffs as the colour needs: a colour-led illustration gets a dense spray that holds
+  // the shape of each wash (pink hair, blue dress, striped stockings), a line drawing with a
+  // little colour gets a light one. Anat, 31.10.2026: the colour is what makes it recognisable.
+  let coloured = 0;
+  const wash = new Uint8Array(w * hh);
+  for (let p = 0; p < w * hh; p++) if (isWash(data, p * 4)) { wash[p] = 1; coloured++; }
+  // Distance (pixels) to the edge of the wash: a puff never spills over its wash
+  // (the hair colour stays off the faces), so the spray keeps the drawing's shapes.
+  const edge = chamfer2(wash, w, hh);
+  const pxToWorld = Math.abs(toWorld(1 / (w - 1), 0)[0] - toWorld(0, 0)[0]);
+  const share = coloured / (w * hh);
+  const target = Math.round(Math.min(9000, 250 + coloured * (0.25 + 0.75 * amount)));
+  const small = Math.max(0.35, 1 - share * 1.4); // dense colour: smaller puffs keep the edges of each wash
+  for (let k = 0; k < 120000 && size.length < target; k++) {
     const x = Math.floor(rnd() * w), y = Math.floor(rnd() * hh), i = (y * w + x) * 4;
-    const sat = Math.max(data[i], data[i + 1], data[i + 2]) - Math.min(data[i], data[i + 1], data[i + 2]);
     const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-    if (sat < 28 || lum < 55) continue;
+    if (!isWash(data, i) || lum < 55) continue;
     const u = x / (w - 1), v = y / (hh - 1);
     const depth = sample(...gxy(u, v)) * zScale;
     if (!(depth > 0)) continue;
@@ -200,8 +251,9 @@ function colourCloud(prepared, sample, zScale, gxy, toWorld, amount) {
     const [X, Y] = toWorld(u, v);
     pos.push(X + (rnd() - 0.5) * 0.03, Y + (rnd() - 0.5) * 0.03, (rnd() * 2 - 1) * depth * 0.95);
     tint.push(...c);
-    size.push(0.06 + Math.pow(rnd(), 2) * 0.34);                       // many small, a few large puffs
-    alpha.push((0.035 + Math.pow(rnd(), 3) * 0.2) * (0.5 + amount));    // mostly faint, some denser
+    const room = (edge[y * w + x] + 1.5) * pxToWorld * 2.4;                       // the puff's diameter fits its wash
+    size.push(Math.min(room, (0.05 + Math.pow(rnd(), 2) * 0.3) * small));       // many small, a few large puffs
+    alpha.push((0.05 + Math.pow(rnd(), 3) * 0.22 + share * 0.18) * (0.5 + amount)); // denser where colour leads
   }
   if (size.length < 20) return null;
   const g = new THREE.BufferGeometry();

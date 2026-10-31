@@ -37,24 +37,187 @@ export function extractStrokes(img, opts = {}) {
   const med = (a) => a.sort((m, n) => m - n)[a.length >> 1];
   const bgLum = 0.299 * med(br) + 0.587 * med(bgc) + 0.114 * med(bb);
 
+  // A line is darker than what is right around it, not just darker than the paper.
+  // Brightness alone calls every saturated wash ink (pink hair is as dark as pencil) and
+  // turns grey fills into thick blobs whose skeletons are staircases. So, as in adaptive
+  // thresholding (Bradley & Roth, "Adaptive Thresholding Using the Integral Image", 2007):
+  //   - local: the pixel is clearly darker than the mean of its neighbourhood (a line on any
+  //     ground: a hair strand over orange, a face outline over skin);
+  //   - colour: a saturated pixel is a wash, unless it is really dark;
+  //   - solid: very dark neutral marks (a black marker) count even when wide.
+  // Found on Anat's illustration of two girls hugging (31.10.2026): 41% of the "ink" was colour.
+  const lum = new Float32Array(N), sat = new Float32Array(N);
+  for (let p = 0; p < N; p++) {
+    const i = p * 4, r = src[i], g = src[i + 1], b = src[i + 2];
+    lum[p] = 0.299 * r + 0.587 * g + 0.114 * b;
+    const mx = Math.max(r, g, b);
+    sat[p] = mx ? (mx - Math.min(r, g, b)) / mx : 0;
+  }
+  const rad = Math.max(3, Math.round(Math.max(W, H) / 140));
+  const mean = boxMean(lum, W, H, rad);
+  const localT = 0.42 - 0.34 * sens;                 // 0.42 .. 0.08 darker than the surroundings
   let ink = new Uint8Array(N);
   for (let p = 0; p < N; p++) {
-    const i = p * 4;
-    const lum = 0.299 * src[i] + 0.587 * src[i + 1] + 0.114 * src[i + 2];
-    if (bgLum > 1 && (bgLum - lum) / bgLum > darkness) ink[p] = 1;
+    if (!(bgLum > 1)) break;
+    const colour = sat[p] > 0.45 && lum[p] > 70;
+    if (colour) continue;
+    const local = (mean[p] - lum[p]) / Math.max(1, mean[p]);
+    const solid = (bgLum - lum[p]) / bgLum > Math.max(darkness, 0.55) && sat[p] < 0.3;
+    if (local > localT || solid) ink[p] = 1;
   }
   for (let x = 0; x < W; x++) { ink[x] = 0; ink[(H - 1) * W + x] = 0; }
   for (let y = 0; y < H; y++) { ink[y * W] = 0; ink[y * W + W - 1] = 0; }
 
   ink = removeSmall(ink, W, H, minBlob);
   const skel = thin(ink, W, H);
+  if (opts.debug) opts.debug({ ink, skel });
+  // The drawing's own line weight: ink area over centre-line length, in pixels.
+  let inkArea = 0, skelLen = 0;
+  for (let p = 0; p < N; p++) { inkArea += ink[p]; skelLen += skel[p]; }
+  const lineWidth = skelLen ? Math.max(1, Math.min(12, inkArea / skelLen)) : 2;
   let lines = trace(skel, W, H);
   lines = pruneSpurs(lines, W, H);
   lines = mergeTouching(lines, W, H);
-  return lines
+  const out = lines
     .filter((l) => l.length >= 3)
     .map((l) => rdp(l, 0.8))
     .filter((l) => l.length >= 2 && pathLength(l) >= minLength);
+  out.lineWidth = lineWidth;
+  out.ink = ink;
+  out.size = [W, H];
+  return out;
+}
+
+/**
+ * One thread through all the strokes, the way a one-line drawing is made by hand: to reach
+ * the next line the pen runs back along lines already drawn instead of cutting across the
+ * paper. Order: greedy nearest end. Each gap is routed by A* over the ink (cheap) and the
+ * paper (expensive), so from the front the joins lie on the drawing.
+ * @returns {{path:Array<[number,number]>, drawn:number, offInk:number}} pixel coords
+ */
+export function threadThroughInk(strokes, opts = {}) {
+  const [W, H] = strokes.size || [0, 0];
+  const ink = strokes.ink;
+  if (!strokes.length) return { path: [], drawn: 0, offInk: 0 };
+  const left = strokes.slice();
+  // Start at the top: the drawing is read from the top down.
+  let si = 0;
+  left.forEach((l, i) => { if (Math.min(l[0][1], l.at(-1)[1]) < Math.min(left[si][0][1], left[si].at(-1)[1])) si = i; });
+  let first = left.splice(si, 1)[0];
+  if (first.at(-1)[1] < first[0][1]) first = first.slice().reverse();
+  const path = first.map((p) => [p[0], p[1]]);
+  let drawn = pathLength(first), offInk = 0;
+  const maxRoute = (opts.maxRoute ?? 0.75) * Math.max(W, H);
+  while (left.length) {
+    const t = path.at(-1);
+    let b = 0, flip = false, bd = Infinity;
+    left.forEach((l, i) => {
+      const d0 = Math.hypot(t[0] - l[0][0], t[1] - l[0][1]), d1 = Math.hypot(t[0] - l.at(-1)[0], t[1] - l.at(-1)[1]);
+      if (d0 < bd) { bd = d0; b = i; flip = false; }
+      if (d1 < bd) { bd = d1; b = i; flip = true; }
+    });
+    const next = left.splice(b, 1)[0];
+    const l = flip ? next.slice().reverse() : next;
+    if (bd > 2.5) {
+      const route = ink && bd < maxRoute ? routeOnInk(ink, W, H, t, l[0]) : null;
+      const hop = route || [t, l[0]];
+      for (let i = 1; i < hop.length - 1; i++) path.push(hop[i]);
+      offInk += route ? route.off : bd;
+    }
+    for (const p of l) path.push([p[0], p[1]]);
+    drawn += pathLength(l);
+  }
+  return { path: simplifyRoute(path), drawn, offInk };
+}
+
+// A* on the pixel grid: moving along ink costs 1, across paper 12. Diagonal steps cost sqrt 2.
+// Returns the pixel path (smoothed a little) with .off = length that leaves the ink.
+function routeOnInk(ink, W, H, a, b) {
+  const PAPER = 12;
+  const ax = Math.round(a[0]), ay = Math.round(a[1]), bx = Math.round(b[0]), by = Math.round(b[1]);
+  const start = ay * W + ax, goal = by * W + bx;
+  if (start === goal) return null;
+  const g = new Float32Array(W * H).fill(Infinity);
+  const from = new Int32Array(W * H).fill(-1);
+  const heap = new MinHeap();
+  const h = (p) => Math.hypot((p % W) - bx, ((p / W) | 0) - by);
+  g[start] = 0;
+  heap.push(start, h(start));
+  const STEPS = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [1, 1, Math.SQRT2], [1, -1, Math.SQRT2], [-1, 1, Math.SQRT2], [-1, -1, Math.SQRT2]];
+  let budget = 500000;
+  while (heap.size && budget-- > 0) {
+    const p = heap.pop();
+    if (p === goal) break;
+    const x = p % W, y = (p / W) | 0;
+    for (const [dx, dy, c] of STEPS) {
+      const xx = x + dx, yy = y + dy;
+      if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+      const q = yy * W + xx;
+      const ng = g[p] + c * (ink[q] ? 1 : PAPER);
+      if (ng < g[q]) { g[q] = ng; from[q] = p; heap.push(q, ng + h(q)); }
+    }
+  }
+  if (from[goal] < 0) return null;
+  const pts = [];
+  let off = 0;
+  for (let p = goal; p >= 0; p = from[p]) {
+    pts.push([p % W, (p / W) | 0]);
+    if (!ink[p]) off += 1;
+    if (p === start) break;
+  }
+  pts.reverse();
+  pts.off = off;
+  return pts;
+}
+
+// Pixel staircases from the routes are smoothed into the line (Ramer-Douglas-Peucker).
+function simplifyRoute(path) {
+  return rdp(path, 0.7);
+}
+
+class MinHeap {
+  constructor() { this.k = []; this.v = []; }
+  get size() { return this.k.length; }
+  push(key, val) {
+    const k = this.k, v = this.v;
+    let i = k.length;
+    k.push(key); v.push(val);
+    while (i > 0) {
+      const pa = (i - 1) >> 1;
+      if (v[pa] <= val) break;
+      k[i] = k[pa]; v[i] = v[pa]; i = pa;
+    }
+    k[i] = key; v[i] = val;
+  }
+  pop() {
+    const k = this.k, v = this.v;
+    const top = k[0];
+    const lk = k.pop(), lv = v.pop();
+    if (k.length) {
+      let i = 0;
+      const n = k.length;
+      for (;;) {
+        let c = 2 * i + 1;
+        if (c >= n) break;
+        if (c + 1 < n && v[c + 1] < v[c]) c++;
+        if (v[c] >= lv) break;
+        k[i] = k[c]; v[i] = v[c]; i = c;
+      }
+      k[i] = lk; v[i] = lv;
+    }
+    return top;
+  }
+}
+
+/**
+ * Wire radius in world units from the drawing's own line weight, so a fine drawing gives a
+ * fine wire and a marker drawing a thick one. The thickness slider scales around it
+ * (0.35, the default, is the drawing's own weight; 0 is a quarter, 1 is about six times).
+ */
+export function wireRadius(lineWidthPx, pxToWorld, thickness = LINE_DEFAULTS.thickness) {
+  const own = 0.5 * lineWidthPx * pxToWorld;
+  const k = Math.pow(2, (clamp01(thickness) - 0.35) * 4);
+  return Math.max(0.0025, Math.min(0.05, own * k));
 }
 
 /**
@@ -350,6 +513,25 @@ export function tubeMesh(paths, radius, radial = 8) {
 
 /* ---------- skeleton and tracing ---------- */
 
+// Mean of a (2r+1)^2 box around every pixel, from an integral image.
+function boxMean(v, W, H, r) {
+  const I = new Float64Array((W + 1) * (H + 1));
+  for (let y = 0; y < H; y++) {
+    let row = 0;
+    for (let x = 0; x < W; x++) { row += v[y * W + x]; I[(y + 1) * (W + 1) + x + 1] = I[y * (W + 1) + x + 1] + row; }
+  }
+  const out = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) {
+    const y0 = Math.max(0, y - r), y1 = Math.min(H, y + r + 1);
+    for (let x = 0; x < W; x++) {
+      const x0 = Math.max(0, x - r), x1 = Math.min(W, x + r + 1);
+      const sum = I[y1 * (W + 1) + x1] - I[y0 * (W + 1) + x1] - I[y1 * (W + 1) + x0] + I[y0 * (W + 1) + x0];
+      out[y * W + x] = sum / ((x1 - x0) * (y1 - y0));
+    }
+  }
+  return out;
+}
+
 // Zhang-Suen thinning: reduces strokes to one-pixel-wide centre lines.
 function thin(m, W, H) {
   const a = m.slice();
@@ -380,35 +562,61 @@ function thin(m, W, H) {
 
 // Walk the skeleton graph into polylines, from endpoints and junctions, then remaining loops.
 function trace(s, W, H) {
-  const OFF = [-W - 1, -W, -W + 1, -1, 1, W - 1, W, W + 1];
-  const nbrs = (p) => OFF.map((o) => p + o).filter((q) => q >= 0 && q < s.length && s[q] && Math.abs((q % W) - (p % W)) <= 1);
-  const deg = new Uint8Array(s.length);
-  for (let p = 0; p < s.length; p++) if (s[p]) deg[p] = nbrs(p).length;
-  const used = new Set();
-  const ek = (a, b) => (a < b ? a * s.length + b : b * s.length + a);
+  // Junctions are counted by branches, not by neighbours: Zhang-Suen leaves L-shaped corners
+  // on diagonal runs, where a plain pixel of a line has three neighbours. Counting neighbours
+  // cut every such line into crumbs that the length filter then dropped (faces disappeared).
+  // Branches = 0 to 1 transitions around the pixel (the crossing number, Rutovitz 1966).
+  const RING = [-W, -W + 1, 1, W + 1, W, W - 1, -1, -W - 1]; // N, NE, E, SE, S, SW, W, NW
+  const inside = (p, o) => { const x = p % W, dx = o === -W - 1 || o === -1 || o === W - 1 ? -1 : o === -W + 1 || o === 1 || o === W + 1 ? 1 : 0; return x + dx >= 0 && x + dx < W && p + o >= 0 && p + o < s.length; };
+  const on = (p, o) => inside(p, o) && s[p + o] === 1;
+  const kind = new Uint8Array(s.length); // 1 end, 2 line, 3 junction, 4 isolated
+  for (let p = 0; p < s.length; p++) {
+    if (!s[p]) continue;
+    let A = 0, B = 0;
+    for (let k = 0; k < 8; k++) { const a = on(p, RING[k]), b = on(p, RING[(k + 1) % 8]); if (a) B++; if (!a && b) A++; }
+    kind[p] = B === 0 ? 4 : A <= 1 ? 1 : A === 2 ? 2 : 3;
+  }
+  const visited = new Uint8Array(s.length);
+  const nbrs = (p) => {
+    const four = [], diag = [];
+    for (let k = 0; k < 8; k++) if (on(p, RING[k])) (k % 2 ? diag : four).push(p + RING[k]);
+    return four.concat(diag); // straight steps first, so a staircase is walked pixel by pixel
+  };
   const lines = [];
-  const walk = (start, next) => {
-    const line = [start, next];
-    used.add(ek(start, next));
-    let prev = start, cur = next;
-    while (deg[cur] === 2) {
-      const n = nbrs(cur).find((q) => q !== prev && !used.has(ek(cur, q)));
-      if (n === undefined) break;
-      used.add(ek(cur, n));
-      line.push(n);
-      prev = cur; cur = n;
+  const walk = (start, first) => {
+    const line = [start, first];
+    if (kind[first] !== 3) visited[first] = 1;
+    let prev = start, cur = first;
+    while (kind[cur] !== 3) {
+      const ns = nbrs(cur).filter((q) => q !== prev && q !== start);
+      let next = ns.find((q) => !visited[q] && kind[q] !== 3);
+      if (next === undefined) next = ns.find((q) => kind[q] === 3 && q !== prev); // end at a junction
+      if (next === undefined) {
+        if (line.length > 3 && nbrs(cur).includes(start)) line.push(start); // closed loop
+        break;
+      }
+      line.push(next);
+      if (kind[next] !== 3) visited[next] = 1;
+      prev = cur; cur = next;
     }
     return line;
   };
-  for (let p = 0; p < s.length; p++) {
-    if (!s[p] || deg[p] === 2) continue;
-    for (const q of nbrs(p)) if (!used.has(ek(p, q))) lines.push(walk(p, q));
+  // From ends and junctions first, then whatever is left (closed loops: an eye, a spiral).
+  for (const want of [1, 3]) {
+    for (let p = 0; p < s.length; p++) {
+      if (kind[p] !== want || (want === 1 && visited[p])) continue;
+      if (want === 1) visited[p] = 1;
+      for (const q of nbrs(p)) if (!visited[q] && kind[q] !== 3) lines.push(walk(p, q));
+      if (want === 3) for (const q of nbrs(p)) if (kind[q] === 3 && q > p) lines.push([p, q]); // junction to junction
+    }
   }
   for (let p = 0; p < s.length; p++) {
-    if (!s[p] || deg[p] !== 2) continue;
-    for (const q of nbrs(p)) if (!used.has(ek(p, q))) lines.push(walk(p, q));
+    if (kind[p] !== 2 || visited[p]) continue;
+    visited[p] = 1;
+    const q = nbrs(p).find((n) => !visited[n]);
+    if (q !== undefined) lines.push(walk(p, q));
   }
-  return lines.map((l) => l.map((p) => [p % W, (p / W) | 0]));
+  return lines.filter((l) => l.length >= 2).map((l) => l.map((p) => [p % W, (p / W) | 0]));
 }
 
 // Short side branches of the skeleton (from line thickness, not from the drawing) are removed.
