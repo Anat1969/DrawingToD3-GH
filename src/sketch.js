@@ -1,15 +1,22 @@
 // Drawing in 3D, browser side: the pen, the transparent sheet, and the wire.
-// The pure geometry lives in sketch-core.js. The wire is built with the same tube as the
-// line sculpture, so a drawing made here and a drawing turned into a line are the same material.
+// Two results from the same strokes:
+//   sculpt (default): the drawing is read like a drawing on paper and wound into space by the
+//     line sculpture engine: the outline sits on the rim, inner lines on the surface, and the
+//     thread wraps the volume, front, rim and back. Anat, 31.10.2026: "the line is not flat,
+//     it wraps space". What was drawn stays on the sheet as a faint pencil line.
+//   line: each line stays where the pen put it.
+// The pure geometry lives in sketch-core.js.
 import * as THREE from 'three';
 import { tubeMesh } from './line-core.js';
 import { isClosed } from './sculpt-core.js';
-import { drawingAnimation } from './sculpt.js';
+import { drawingAnimation, prepareSculpt, lineSculpture } from './sculpt.js';
 import * as core from './sketch-core.js';
 
 const INK = 0x1a1611;   // one line, one colour (the same as the line sculpture)
 const SHEET = 2.6;      // size of the drawing sheet, world units
-const START_VIEW = { target: [0, 1, 0], position: [-1.25, 1.6, 4.05] }; // three quarters: the sheet reads as a plane in space
+const FRONT_VIEW = { target: [0, 1, 0], position: [0, 1.15, 4.4] };    // like a sheet of paper on the desk
+const ANGLE_VIEW = { target: [0, 1, 0], position: [-1.25, 1.6, 4.05] }; // three quarters: the sheet reads as a plane in space
+const PENCIL = 0x6b6457;
 
 export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => {} } = {}) {
   const { scene, camera, controls, canvas } = stage;
@@ -77,12 +84,14 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
 
   /* ---------- the sheet in space ---------- */
   const viewNow = () => ({ position: camera.position.toArray(), target: controls.target.toArray() });
-  const currentPlane = () => core.planeFor(params.plane, params.offset, viewNow());
+  // Reading a drawing needs a page: in sculpt mode the pen always draws on the front sheet.
+  const planeKind = () => (params.result === 'sculpt' ? 'wall' : params.plane);
+  const currentPlane = () => (params.result === 'sculpt' ? core.planeFor('wall', 0) : core.planeFor(params.plane, params.offset, viewNow()));
   let strokePlane = null;
 
   function placeSheet(plane) {
     sheet.position.set(...plane.origin);
-    if (params.plane === 'view' && !strokePlane) sheet.quaternion.copy(camera.quaternion);
+    if (planeKind() === 'view' && !strokePlane) sheet.quaternion.copy(camera.quaternion);
     else sheet.lookAt(sheet.position.clone().add(new THREE.Vector3(...plane.normal)));
   }
 
@@ -247,14 +256,112 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
   }
 
   /* ---------- the work ---------- */
-  function rebuild() {
+  // The drawing as pencil on the sheet: what the engine reads (never exported).
+  const pencil = new THREE.Group();
+  helpers.add(pencil);
+  const pencilMat = new THREE.LineBasicMaterial({ color: PENCIL, transparent: true, opacity: 0.55, depthWrite: false });
+  function drawPencil() {
+    for (const o of [...pencil.children]) { pencil.remove(o); o.geometry.dispose(); }
+    if (params.result !== 'sculpt') return;
+    for (const s of strokes) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(s.pts.flat(), 3));
+      pencil.add(new THREE.Line(g, pencilMat));
+    }
+  }
+
+  function emptyGroup() {
     for (const o of [...group.children]) {
       group.remove(o);
-      if (o.geometry) o.geometry.dispose();
-      if (o.isSprite) { o.material.map?.dispose(); o.material.dispose(); }
+      o.traverse((c) => {
+        if (c.geometry) c.geometry.dispose();
+        if (c.isSprite) { c.material.map?.dispose(); c.material.dispose(); }
+      });
     }
     anim = null;
     closed = null;
+    reading = null;
+  }
+
+  // Reading: strokes to a page, the page through the line engine, the result back onto the strokes.
+  let version = 0;        // bumps when the strokes change
+  let page = null;        // { version, prepared, layout }
+  let readToken = 0;
+  let reading = null;     // { lines, loops, error }
+  let busy = false;
+  let sliderFrame = 0;    // slider moves are read once per frame
+  async function readDrawing() {
+    const token = ++readToken;
+    if (!strokes.length) { emptyGroup(); busy = false; finish(); return; }
+    busy = true;
+    onChange(api.state);
+    try {
+      if (!page || page.version !== version) {
+        const layout = core.paperLayout(strokes, 560);
+        const c = document.createElement('canvas');
+        c.width = layout.width;
+        c.height = layout.height;
+        const g = c.getContext('2d');
+        g.fillStyle = '#ffffff';
+        g.fillRect(0, 0, c.width, c.height);
+        g.strokeStyle = '#141210';
+        g.lineWidth = layout.line;
+        g.lineCap = g.lineJoin = 'round';
+        for (const s of strokes) {
+          g.beginPath();
+          s.pts.forEach((p, i) => { const [x, y] = layout.toPage(p); if (i) g.lineTo(x, y); else g.moveTo(x, y); });
+          g.stroke();
+        }
+        const prepared = await prepareSculpt(c.toDataURL('image/png'));
+        if (token !== readToken) return;
+        page = { version, prepared, layout };
+      }
+      // The engine works in page units; ask it for the thickness that lands on the slider's weight.
+      const want = core.radiusFor(params.thickness) / page.layout.scale;
+      const thickness = Math.max(0, Math.min(1, (want - 0.004) / 0.02));
+      const r = lineSculpture(page.prepared, {
+        depth: params.depth, wrap: params.wrap, thickness,
+        sensitivity: 0.75, cloud: 0, continuous: true,
+      });
+      if (token !== readToken) return;
+      emptyGroup();
+      // Back onto the strokes: the engine's page is 2 units on its long side, centred.
+      const { scale, center } = page.layout;
+      r.object.scale.setScalar(scale);
+      r.object.position.set(center[0], center[1], 0);
+      r.object.traverse((o) => { if (o.isMesh) o.material = wireMat; }); // one ink for every result
+      group.add(r.object);
+      anim = r.animation;
+      closed = r.closed;
+      reading = { lines: r.lines, loops: r.loops, error: null };
+    } catch (err) {
+      if (token !== readToken) return;
+      // No enclosed shape to wind around (an open scribble): keep the lines where they are,
+      // and say what would give them a volume.
+      buildLines();
+      reading = { lines: strokes.length, loops: 0, error: err.code || 'failed' };
+    }
+    busy = false;
+    finish();
+  }
+
+  function finish() {
+    if (active) stage.refresh({ closed, lines: strokes.length });
+    onChange(api.state);
+  }
+
+  function rebuild() {
+    version++;
+    drawPencil();
+    if (params.result === 'sculpt') { readDrawing(); return; }
+    readToken++;
+    busy = false;
+    buildLines();
+    finish();
+  }
+
+  function buildLines() {
+    emptyGroup();
     const paths = core.tubePaths(strokes);
     if (paths.length) {
       const radius = core.radiusFor(params.thickness);
@@ -269,8 +376,6 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
       closed = isClosed(t.indices);
       anim = drawingAnimation(group, g, t.timeline, null, radius);
     }
-    if (active) stage.refresh({ closed, lines: strokes.length });
-    onChange(api.state);
   }
 
   const api = {
@@ -281,7 +386,7 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
       redoStack = [];
       params = core.normalizeParams({ ...params, ...p });
       stage.setBackdrop('paper');
-      stage.setRaw(group, { source: 'ציור במרחב', closed: null, lines: 0, sketch: true }, { view: START_VIEW });
+      stage.setRaw(group, { source: 'ציור במרחב', closed: null, lines: 0, sketch: true }, { view: params.result === 'sculpt' ? FRONT_VIEW : ANGLE_VIEW });
       controls.autoRotate = false;
       applyControls();
       rebuild();
@@ -305,9 +410,19 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
     clear() { if (!strokes.length) return; undoStack.push(strokes); redoStack = []; strokes = []; rebuild(); },
     setTool(next) { tool = next === 'orbit' ? 'orbit' : 'pen'; if (drawing) endStroke(false); showPen(null); applyControls(); },
     setParams(p) {
-      const before = params.thickness;
+      const before = params;
       params = core.normalizeParams({ ...params, ...p });
-      if (params.thickness !== before) rebuild();
+      const shape = ['thickness', 'result', 'depth', 'wrap'].some((k) => params[k] !== before[k]);
+      if (!shape) return;
+      if (params.result !== before.result) { drawPencil(); rebuild(); return; }
+      // Same strokes, new settings: the page is kept, only the wire is rebuilt.
+      if (params.result === 'sculpt') { cancelAnimationFrame(sliderFrame); sliderFrame = requestAnimationFrame(readDrawing); } else { buildLines(); finish(); }
+    },
+    /** Back to the front, where the drawing reads like paper. */
+    front() {
+      controls.target.set(...FRONT_VIEW.target);
+      camera.position.set(...FRONT_VIEW.position);
+      controls.update();
     },
     /** Hide the sheet and the pen (while the drawing replays, and for the archive picture). */
     setHelpersHidden(on) { hideHelpers = !!on; },
@@ -317,7 +432,10 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
       try { return fn(); } finally { helpers.visible = was; }
     },
     get state() {
-      return { count: strokes.length, groups: new Set(strokes.map((s) => s.g)).size, canUndo: undoStack.length > 0, canRedo: redoStack.length > 0, closed };
+      return {
+        count: strokes.length, groups: new Set(strokes.map((s) => s.g)).size, canUndo: undoStack.length > 0, canRedo: redoStack.length > 0, closed,
+        result: params.result, busy, loops: reading ? reading.loops : 0, error: reading ? reading.error : null,
+      };
     },
     get params() { return { ...params }; },
     get data() { return core.serialize(strokes); },

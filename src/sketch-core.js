@@ -5,7 +5,10 @@
 // continues it exactly, and the sheet passes through that point: one thread, in depth.
 // Inspiration: the drawing planes of Mental Canvas (Dorsey et al., Pacific Graphics 2007).
 
-export const SKETCH_DEFAULTS = { thickness: 0.35, plane: 'view', offset: 0, symmetry: false, snap: true };
+// result: 'sculpt' reads the drawing and winds it into space (the line sculpture engine),
+//         'line' keeps each line where the pen put it.
+export const SKETCH_DEFAULTS = { thickness: 0.35, plane: 'view', offset: 0, symmetry: false, snap: true, result: 'sculpt', depth: 0.5, wrap: 0.45 };
+export const RESULTS = ['sculpt', 'line'];
 export const PLANES = ['view', 'wall', 'side', 'floor'];
 export const CENTER = [0, 1, 0]; // the middle of the drawing space, one unit above the floor
 export const STEP = 0.01;        // spacing of the finished line, in world units
@@ -171,5 +174,37 @@ export function normalizeParams(p = {}) {
     offset: Number.isFinite(p.offset) ? Math.max(-1, Math.min(1, p.offset)) : SKETCH_DEFAULTS.offset,
     symmetry: typeof p.symmetry === 'boolean' ? p.symmetry : SKETCH_DEFAULTS.symmetry,
     snap: typeof p.snap === 'boolean' ? p.snap : SKETCH_DEFAULTS.snap,
+    result: RESULTS.includes(p.result) ? p.result : SKETCH_DEFAULTS.result,
+    depth: Number.isFinite(p.depth) ? clamp01(p.depth) : SKETCH_DEFAULTS.depth,
+    wrap: Number.isFinite(p.wrap) ? clamp01(p.wrap) : SKETCH_DEFAULTS.wrap,
+  };
+}
+
+/**
+ * The drawing as a sheet of paper for the line sculpture engine: the strokes seen from the
+ * front (x, y), centred on a square-ish page with a margin, and the way back to world units.
+ * The engine maps the page's longest side to 2 units around its centre, so a point on the
+ * page returns to the world by: world = centre + engine * scale.
+ * @returns {{width:number,height:number,line:number,toPage:(p:number[])=>[number,number],center:number[],scale:number}|null}
+ */
+export function paperLayout(strokes, side = 560) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const s of strokes) for (const p of s.pts) {
+    if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0];
+    if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1];
+  }
+  if (!Number.isFinite(x0)) return null;
+  const bw = Math.max(x1 - x0, 0.05), bh = Math.max(y1 - y0, 0.05);
+  const margin = side * 0.1;
+  const k = (side - 2 * margin) / Math.max(bw, bh);       // pixels per world unit
+  const width = Math.round(bw >= bh ? side : bw * k + 2 * margin);
+  const height = Math.round(bh >= bw ? side : bh * k + 2 * margin);
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  return {
+    width, height,
+    line: Math.max(3, side * 0.009),
+    toPage: (p) => [width / 2 + (p[0] - cx) * k, height / 2 - (p[1] - cy) * k],
+    center: [cx, cy, 0],
+    scale: Math.max(width, height) / (2 * k),            // engine units back to world units
   };
 }

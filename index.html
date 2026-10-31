@@ -49,7 +49,7 @@
       <div class="intro" data-for="sketch" hidden>
         <p class="eyebrow">02 / ציור במרחב</p>
         <h1>קו אחד.<br><span>נמשך ישר אל תוך החלל.</span></h1>
-        <p class="lede">מציירים על משטח שקוף.<br>מקיפים את העבודה, והמשטח מסתובב עם המבט.<br>לחיצה ליד קו קיים ממשיכה אותו אל העומק.</p>
+        <p class="lede">מציירים על הדף כמו בעיפרון.<br>הציור נקרא: קו המתאר יושב על שפת הגוף, הקו הפנימי על פניו.<br>החוט מתלפף סביב הנפח, מלפנים, דרך השפה ומאחור.</p>
       </div>
 
       <div class="studio">
@@ -98,6 +98,25 @@
               </div>
             </div>
             <div class="sk-row">
+              <span class="legend"><b>תוצאה:</b> מה קורה לציור</span>
+              <div class="seg" role="group" aria-label="תוצאה">
+                <button type="button" data-result="sculpt" aria-pressed="true">פסל מלופף</button>
+                <button type="button" data-result="line" aria-pressed="false">קו כפי שצויר</button>
+              </div>
+            </div>
+            <div class="sk-sculpt">
+              <label class="slider">
+                <span><b>עומק:</b> כמה הגוף יוצא מהדף</span>
+                <input type="range" id="skDepth" min="0" max="100" value="50">
+                <output id="skDepthVal" dir="ltr">50</output>
+              </label>
+              <label class="slider">
+                <span><b>ליפוף:</b> החוט מתלפף סביב הנפח</span>
+                <input type="range" id="skWrap" min="0" max="100" value="45">
+                <output id="skWrapVal" dir="ltr">45</output>
+              </label>
+            </div>
+            <div class="sk-row sk-line">
               <span class="legend"><b>משטח:</b> על מה העט מצייר</span>
               <div class="seg" role="group" aria-label="משטח הציור">
                 <button type="button" data-plane="view" aria-pressed="true">מול המבט</button>
@@ -106,7 +125,7 @@
                 <button type="button" data-plane="floor" aria-pressed="false">רצפה</button>
               </div>
             </div>
-            <label class="slider">
+            <label class="slider sk-line">
               <span><b>עומק המשטח:</b> קדימה ואחורה</span>
               <input type="range" id="skOffset" min="-100" max="100" value="0">
               <output id="skOffsetVal" dir="ltr">0</output>
@@ -121,6 +140,7 @@
             <div class="actions">
               <button class="btn" id="skUndo" type="button" disabled>ביטול</button>
               <button class="btn" id="skRedo" type="button" disabled>חזרה</button>
+              <button class="btn" id="skFront" type="button">מבט חזית</button>
               <button class="btn quiet" id="skNew" type="button" disabled>ציור חדש</button>
             </div>
             <ul class="keys" aria-label="קיצורים">

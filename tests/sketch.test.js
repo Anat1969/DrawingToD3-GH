@@ -96,7 +96,7 @@ test('archive: strokes survive a round trip, and broken data is ignored', () => 
   assert.ok(back[0].pts.every((p, i) => dist(p, strokes[0].pts[i]) < 1e-3));
   assert.deepEqual(deserialize([null, { p: [1, 2] }, { p: ['a', 1, 2, 3, 4, 5] }, 'x']), []);
   assert.equal(nextGroup(back), 1);
-  assert.deepEqual(normalizeParams({ plane: 'roof', thickness: 4 }), { thickness: 1, plane: 'view', offset: 0, symmetry: false, snap: true });
+  assert.deepEqual(normalizeParams({ plane: 'roof', thickness: 4 }), { thickness: 1, plane: 'view', offset: 0, symmetry: false, snap: true, result: 'sculpt', depth: 0.5, wrap: 0.45 });
 });
 
 test('every drawing is a closed wire, printable, with one weight', async () => {
@@ -112,4 +112,19 @@ test('every drawing is a closed wire, printable, with one weight', async () => {
   assert.ok(isClosed(tube.indices), 'every edge shared by exactly two triangles');
   assert.ok(tube.weight.every((w) => w === 1), 'one line, one weight');
   assert.ok(tube.timeline.end.length > 0 && tube.timeline.duration > 0, 'a timeline to replay the drawing in its real order');
+});
+
+test('reading the drawing: the page fits the strokes, and the engine maps back onto them', async () => {
+  const { paperLayout } = await import('../src/sketch-core.js');
+  const strokes = [{ g: 0, pts: [[-0.5, 0.6, 0], [0.5, 0.6, 0], [0.5, 1.4, 0], [-0.5, 1.4, 0], [-0.5, 0.6, 0]] }];
+  const L = paperLayout(strokes, 560);
+  assert.equal(L.width, 560, 'the wide side fills the page');
+  assert.ok(L.height < 560 && L.height > 300);
+  const [px, py] = L.toPage([0.5, 1.4, 0]);
+  assert.ok(px > L.width / 2 && py < L.height / 2, 'up in the world is up on the page');
+  // The engine's world: longest side of the page = 2 units, centred. Back to the world:
+  const engine = ((px - L.width / 2) / Math.max(L.width, L.height)) * 2;
+  assert.ok(Math.abs(L.center[0] + engine * L.scale - 0.5) < 1e-9, 'a page point returns to where it was drawn');
+  assert.equal(paperLayout([]), null);
+  assert.deepEqual([normalizeParams({}).result, normalizeParams({ result: 'line' }).result], ['sculpt', 'line'], 'reading the drawing is the default');
 });
