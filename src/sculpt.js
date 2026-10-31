@@ -2,7 +2,7 @@
 // either the inflated body or the line sculpture with Three.js.
 import * as THREE from 'three';
 import { analysePixels, buildSculpt, heightField, isClosed, DEFAULTS } from './sculpt-core.js';
-import { extractStrokes, liftStrokes, tubeMesh, wrapLoops, depthScale, wireRadius, threadThroughInk, LINE_DEFAULTS } from './line-core.js';
+import { extractStrokes, liftStrokes, tubeMesh, wrapLoops, depthScale, wireRadius, threadThroughInk, stitchLoops, LINE_DEFAULTS } from './line-core.js';
 
 export { DEFAULTS, LINE_DEFAULTS };
 const GRID = 200;      // body analysis resolution (longest side)
@@ -96,7 +96,10 @@ export function lineSculpture(prepared, opts) {
   const k = depthScale(opts.depth);
   const zGrid = (gx, gy) => sample(gx, gy) * unit * k;
   const toWGrid = (gx, gy) => [(gx - pad - w0 / 2) * unit, (h0 / 2 - (gy - pad)) * unit];
-  const loops = wrapLoops(a, zGrid, toWGrid, { wrap: opts.wrap, lift: radius * 0.6 });
+  // The wrap binds the outline like a whip stitch, so the drawing inside stays readable from the
+  // front (Anat, 31.10.2026). The free spiral around the parts remains for shapes with no outline.
+  let loops = stitchLoops(a, zGrid, toWGrid, { wrap: opts.wrap, lift: radius * 0.6 });
+  if (!loops.length && (opts.wrap ?? LINE_DEFAULTS.wrap) > 0) loops = wrapLoops(a, zGrid, toWGrid, { wrap: opts.wrap, lift: radius * 0.6 });
 
   // One thread: the strokes joined along the ink (a one-line drawing), then the wrapping.
   const continuous = opts.continuous ?? LINE_DEFAULTS.continuous;

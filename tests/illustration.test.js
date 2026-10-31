@@ -48,3 +48,19 @@ test('the wire has the drawing\'s own line weight', () => {
   assert.ok(bold > fine * 3, 'a marker drawing gives a thicker wire than a fine pen');
   assert.ok(wireRadius(2, px, 1) > wireRadius(2, px, 0.35) * 4 && wireRadius(2, px, 0) < wireRadius(2, px, 0.35), 'the thickness slider scales around it');
 });
+
+test('brush illustration: colour stripes are lines too (zebras in magenta and blue)', () => {
+  const Z = 300;
+  const zrgb = zlib.gunzipSync(fs.readFileSync(new URL('./fixtures/zebras-300.rgb.gz', import.meta.url)));
+  const zd = new Uint8ClampedArray(Z * Z * 4);
+  for (let p = 0; p < Z * Z; p++) { zd.set(zrgb.subarray(p * 3, p * 3 + 3), p * 4); zd[p * 4 + 3] = 255; }
+  const zimg = { width: Z, height: Z, data: zd };
+  const withBands = extractStrokes(zimg, { sensitivity: 0.6 });
+  const inkOnly = extractStrokes(zimg, { sensitivity: 0.6, bands: false });
+  const total = (st) => st.reduce((a, s) => a + len(s), 0);
+  assert.ok(total(withBands) > 1.8 * total(inkOnly), `stripes read as lines: ${Math.round(total(withBands))}px against ${Math.round(total(inkOnly))}px of ink alone`);
+  // Both zebras: line on the left half and on the right half of the picture.
+  const half = (left) => withBands.reduce((a, s) => a + s.filter(([x]) => (left ? x < Z * 0.45 : x > Z * 0.55)).length, 0);
+  assert.ok(half(true) > 150 && half(false) > 150, `both animals are read (${half(true)} / ${half(false)} points)`);
+  assert.ok(withBands.lineWidth <= Z / 170 + 1e-9, 'a brush stripe does not make the wire heavy');
+});

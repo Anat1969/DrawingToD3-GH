@@ -165,3 +165,47 @@ test('lift: drawn strokes come before the wrapping in the thread', () => {
   const lastDrawn = path.map((p) => p[3]).lastIndexOf(1);
   assert.ok(firstWrap > lastDrawn, 'wrapping starts after the last drawn stroke');
 });
+
+test('stitch: the wrap binds the outline like a whip stitch and leaves the inside clear', async () => {
+  const { stitchLoops } = await import('../src/line-core.js');
+  // A figure: a head on a body, as in the wrap test above.
+  const W = 100, H = 160, mask = new Uint8Array(W * H);
+  const body = (x, y) => ((x - 50) / 26) ** 2 + ((y - 105) / 48) ** 2 < 1;
+  const head = (x, y) => ((x - 50) / 17) ** 2 + ((y - 35) / 17) ** 2 < 1;
+  const neck = (x, y) => Math.abs(x - 50) < 6 && y > 45 && y < 62;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (body(x, y) || head(x, y) || neck(x, y)) mask[y * W + x] = 1;
+  const surf = (x, y) => (mask[Math.round(y) * W + Math.round(x)] ? 0.3 : 0);
+  const toW = (x, y) => [x / 80 - 0.6, 1 - y / 80];
+  assert.equal(stitchLoops({ mask, W, H }, surf, toW, { wrap: 0 }).length, 0, 'no wrapping at 0');
+  const out = stitchLoops({ mask, W, H }, surf, toW, { wrap: 0.45 });
+  assert.equal(out.length, 1, 'one outline, one gesture');
+  assert.ok(out.turns >= 12, `${out.turns} stitches`);
+  const p = out[0];
+  assert.ok(p.every((q) => q[3] === 1), 'same line as the drawing');
+  assert.ok(p.some((q) => q[2] > 0.15) && p.some((q) => q[2] < -0.15), 'binds front and back');
+  // Seen from the front it stays by the outline: the face (the middle of the head) stays clear.
+  const px = (q) => [(q[0] + 0.6) * 80, (1 - q[1]) * 80];
+  const inFace = p.filter((q) => { const [x, y] = px(q); return Math.hypot(x - 50, y - 35) < 9; }).length;
+  assert.equal(inFace, 0, 'never crosses the face');
+  const nearEdge = p.filter((q) => { const [x, y] = px(q); const xi = Math.round(x), yi = Math.round(y); let d = 99; for (let dy = -12; dy <= 12; dy++) for (let dx = -12; dx <= 12; dx++) { const a = mask[(yi + dy) * W + xi + dx] || 0; if (!a && Math.hypot(dx, dy) < d) d = Math.hypot(dx, dy); } return d <= 12; }).length;
+  assert.ok(nearEdge / p.length > 0.97, `stays by the outline (${(100 * nearEdge / p.length).toFixed(0)}%)`);
+  // Through the body: part of each stitch passes inside, between front and back.
+  const through = p.filter((q) => Math.abs(q[2]) < 0.1 && mask[Math.round(px(q)[1]) * W + Math.round(px(q)[0])]).length / p.length;
+  assert.ok(through > 0.04, `passes through the body (${(through * 100).toFixed(0)}%)`);
+  // Visits every part of the outline: head and body.
+  const ys = p.map((q) => px(q)[1]);
+  assert.ok(ys.some((y) => y < 25) && ys.some((y) => y > 140), 'round the head and the body');
+  // Freehand: the stitch length varies, and the gesture is smooth.
+  let sharp = 0;
+  for (let i = 2; i < p.length; i++) {
+    const u = [0, 1, 2].map((j) => p[i - 1][j] - p[i - 2][j]), v = [0, 1, 2].map((j) => p[i][j] - p[i - 1][j]);
+    if ((u[0] * v[0] + u[1] * v[1] + u[2] * v[2]) / (Math.hypot(...u) * Math.hypot(...v) || 1) < 0.7) sharp++;
+  }
+  assert.ok(sharp / p.length < 0.03, `smooth (${sharp} sharp of ${p.length})`);
+  const pos = []; // where each stitch comes out in front
+  p.forEach((q, i) => { if (i && p[i - 1][2] <= 0 && q[2] > 0) { pos.push(px(q)); } });
+  const gaps = pos.slice(1).map((q, i) => Math.hypot(q[0] - pos[i][0], q[1] - pos[i][1]));
+  const mean = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+  const sd = Math.sqrt(gaps.reduce((a, b) => a + (b - mean) ** 2, 0) / gaps.length);
+  assert.ok(sd / mean > 0.12, `stitch length varies like a hand (${(100 * sd / mean).toFixed(0)}%)`);
+});

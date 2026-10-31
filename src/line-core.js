@@ -65,6 +65,24 @@ export function extractStrokes(img, opts = {}) {
     const solid = (bgLum - lum[p]) / bgLum > Math.max(darkness, 0.55) && sat[p] < 0.3;
     if (local > localT || solid) ink[p] = 1;
   }
+  // Colour lines: a line is long and narrow whatever its colour (zebra stripes in magenta and
+  // blue), a wash is wide (a head of pink hair). Morphological opening keeps the wide washes;
+  // what colour remains outside them is a band, a line drawn with a brush (31.10.2026, zebras).
+  if (opts.bands !== false) {
+    const br0 = med(br.slice()), bg0 = med(bgc.slice()), bb0 = med(bb.slice());
+    const colourT = 95 - 45 * sens;                     // distance from the paper colour
+    const C = new Uint8Array(N);
+    for (let p = 0; p < N; p++) {
+      const i = p * 4, dr = src[i] - br0, dg = src[i + 1] - bg0, db = src[i + 2] - bb0;
+      if (sat[p] > 0.28 && dr * dr + dg * dg + db * db > colourT * colourT) C[p] = 1; // grey is pencil, handled above
+    }
+    const r = Math.max(3, Math.round(Math.max(W, H) / 60));
+    const inside = chamferDist(C, W, H, 1);              // distance to the paper
+    const core = new Uint8Array(N);
+    for (let p = 0; p < N; p++) core[p] = inside[p] > r ? 1 : 0;
+    const fromCore = chamferDist(core, W, H, 0);         // distance to a wide wash
+    for (let p = 0; p < N; p++) if (C[p] && fromCore[p] > r + 0.5) ink[p] = 1;
+  }
   for (let x = 0; x < W; x++) { ink[x] = 0; ink[(H - 1) * W + x] = 0; }
   for (let y = 0; y < H; y++) { ink[y * W] = 0; ink[y * W + W - 1] = 0; }
 
@@ -74,7 +92,9 @@ export function extractStrokes(img, opts = {}) {
   // The drawing's own line weight: ink area over centre-line length, in pixels.
   let inkArea = 0, skelLen = 0;
   for (let p = 0; p < N; p++) { inkArea += ink[p]; skelLen += skel[p]; }
-  const lineWidth = skelLen ? Math.max(1, Math.min(12, inkArea / skelLen)) : 2;
+  // Capped at a pen's weight (relative to the page): a brush stripe is carried by the colour
+  // spray, the wire marks only its centre line (31.10.2026, zebras came out too heavy).
+  const lineWidth = skelLen ? Math.max(1, Math.min(Math.max(W, H) / 170, inkArea / skelLen)) : 2;
   let lines = trace(skel, W, H);
   lines = pruneSpurs(lines, W, H);
   lines = mergeTouching(lines, W, H);
@@ -144,7 +164,8 @@ function routeOnInk(ink, W, H, a, b) {
   g[start] = 0;
   heap.push(start, h(start));
   const STEPS = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [1, 1, Math.SQRT2], [1, -1, Math.SQRT2], [-1, 1, Math.SQRT2], [-1, -1, Math.SQRT2]];
-  let budget = 500000;
+  const gap = Math.hypot(bx - ax, by - ay);
+  let budget = Math.max(5000, Math.min(150000, 40 * gap * gap)); // a long jump over bare paper is not worth a search of the page
   while (heap.size && budget-- > 0) {
     const p = heap.pop();
     if (p === goal) break;
@@ -154,7 +175,7 @@ function routeOnInk(ink, W, H, a, b) {
       if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
       const q = yy * W + xx;
       const ng = g[p] + c * (ink[q] ? 1 : PAPER);
-      if (ng < g[q]) { g[q] = ng; from[q] = p; heap.push(q, ng + h(q)); }
+      if (ng < g[q]) { g[q] = ng; from[q] = p; heap.push(q, ng + 2.5 * h(q)); } // weighted A*: near-best, much faster
     }
   }
   if (from[goal] < 0) return null;
@@ -288,6 +309,94 @@ export function liftStrokes(strokes, map, heightAt, toWorld, opts = {}) {
     for (const p of s) path.push(p);
   });
   return [chaikin(path, path.length > 4000 ? 1 : 2)];
+}
+
+/**
+ * Wrapping as a whip stitch around the outline (Anat, 31.10.2026): the pen travels along the
+ * outline of each part and winds round its edge, the way the edge of a cloth is bound. It comes
+ * out in front just inside the outline, rounds the edge, passes behind, and returns through
+ * the body. Seen from the front it stays near the outline, so the faces and the inner drawing
+ * stay clear; seen from the side it binds front and back, which gives the volume.
+ * Freehand: pitch, reach and lean drift slowly along the way, like a hand.
+ * @param a    analysed silhouette { mask, W, H, dist? } (grid pixels)
+ * @param zAt  (gx, gy) => surface depth in world units (>= 0)
+ * @param toW  (gx, gy) => [x, y] world coords
+ * @returns {Array<Array<[x,y,z,w]>>} one path per outline, with a `turns` count
+ */
+export function stitchLoops(a, zAt, toW, opts = {}) {
+  const amount = clamp01(opts.wrap ?? LINE_DEFAULTS.wrap);
+  const out = [];
+  out.turns = 0;
+  if (amount <= 0.001) return out;
+  const { mask, W, H } = a;
+  const D = blurField(a.dist || chamfer2(mask, W, H), mask, W, H, 3);
+  // Outlines: the rim of the silhouette, thinned and traced into closed polylines.
+  const rim = new Uint8Array(W * H);
+  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+    const p = y * W + x;
+    if (mask[p] && (!mask[p - 1] || !mask[p + 1] || !mask[p - W] || !mask[p + W])) rim[p] = 1;
+  }
+  const size = Math.max(W, H);
+  const outlines = trace(thin(rim, W, H), W, H)
+    .map((l) => chaikin(chaikin(l.map((q) => [q[0], q[1], 0]), 1), 1))
+    .filter((l) => pathLength(l) > size * 0.12)
+    .sort((m, n) => pathLength(n) - pathLength(m))
+    .slice(0, 8);
+  if (!outlines.length) return out;
+
+  let seed = opts.seed || 20261031;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const wave = () => { const f = [0.013 + rnd() * 0.015, 0.04 + rnd() * 0.03, 0.09 + rnd() * 0.05], ph = [rnd() * 6.3, rnd() * 6.3, rnd() * 6.3]; return (t) => Math.sin(t * f[0] + ph[0]) * 0.55 + Math.sin(t * f[1] + ph[1]) * 0.3 + Math.sin(t * f[2] + ph[2]) * 0.15; };
+  const wPitch = wave(), wReach = wave(), wLean = wave();
+  const pitch0 = size * (0.18 - 0.135 * amount);       // pixels of outline per turn
+  const reach0 = size * (0.022 + 0.02 * amount);       // how far the stitch bites into the body
+  const lift = opts.lift || 0;
+  const Dat = (x, y) => sampleField(D, W, H, x, y);
+
+  for (const line of outlines) {
+    // Arc length along the outline, and a lookup of position and inward normal by length.
+    const P = line, n = P.length;
+    const acc = [0];
+    for (let i = 1; i < n; i++) acc.push(acc[i - 1] + Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]));
+    const total = acc[n - 1];
+    let k = 0;
+    const at = (s) => {
+      while (k < n - 2 && acc[k + 1] < s) k++;
+      while (k > 0 && acc[k] > s) k--;
+      const f = Math.min(1, Math.max(0, (s - acc[k]) / Math.max(1e-6, acc[k + 1] - acc[k])));
+      const x = P[k][0] + (P[k + 1][0] - P[k][0]) * f, y = P[k][1] + (P[k + 1][1] - P[k][1]) * f;
+      let gx = Dat(x + 1.5, y) - Dat(x - 1.5, y), gy = Dat(x, y + 1.5) - Dat(x, y - 1.5);
+      const g = Math.hypot(gx, gy);
+      if (g < 1e-6) { const tx = P[k + 1][0] - P[k][0], ty = P[k + 1][1] - P[k][1], tl = Math.hypot(tx, ty) || 1; gx = -ty / tl; gy = tx / tl; } else { gx /= g; gy /= g; }
+      return [x, y, gx, gy];
+    };
+    const path = [];
+    let s = 0, theta = rnd() * Math.PI * 2, turns = 0;
+    const pxWorld = Math.hypot(toW(1, 0)[0] - toW(0, 0)[0], toW(1, 0)[1] - toW(0, 0)[1]) || 1;
+    while (s < total) {
+      const pitch = pitch0 * (1 + 0.4 * wPitch(s));
+      const reach = reach0 * (1 + 0.45 * wReach(s));
+      const [x, y, nx, ny] = at(s);
+      // Centre of the stitch just inside the edge; the thread swings out past the edge (cos)
+      // and from front to back (sin). At theta = pi it passes through the body.
+      const cx = x + nx * reach * 0.55, cy = y + ny * reach * 0.55;
+      const out2 = -Math.cos(theta) * reach;
+      const lean = wLean(s) * reach * 0.35 * Math.sin(theta);   // the hand leans along the edge
+      const tx = -ny, ty = nx;
+      const gx = cx + nx * out2 + tx * lean, gy = cy + ny * out2 + ty * lean;
+      const depth = Math.max(zAt(cx + nx * reach * 0.6, cy + ny * reach * 0.6), 0.02) * 1.15;
+      // A deep, narrow stitch turns hard at the edge: more points per turn keep it smooth.
+      const perTurn = Math.max(18, Math.min(96, Math.round(9 * (depth + lift) / (reach * pxWorld))));
+      const [X, Y] = toW(gx, gy);
+      const z = Math.sin(theta) * (depth + lift);
+      path.push([X, Y, z, WRAP]);
+      theta += (Math.PI * 2) / perTurn;
+      s += pitch / perTurn;
+      if (theta > Math.PI * 2) { theta -= Math.PI * 2; turns++; }
+    }
+    if (path.length > 4) { out.push(path); out.turns += turns; }
+  }
+  return out;
 }
 
 /**
@@ -512,6 +621,30 @@ export function tubeMesh(paths, radius, radial = 8) {
 }
 
 /* ---------- skeleton and tracing ---------- */
+
+// Chamfer distance (1, 1.4). want=1: for pixels of the mask, distance to the nearest pixel
+// outside it. want=0: for every pixel, distance to the nearest pixel of the mask.
+function chamferDist(m, W, H, want) {
+  const d = new Float32Array(W * H);
+  for (let p = 0; p < W * H; p++) d[p] = (want ? m[p] : !m[p]) ? 1e6 : 0;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const p = y * W + x;
+    if (!d[p]) continue;
+    let v = d[p];
+    if (x > 0) v = Math.min(v, d[p - 1] + 1);
+    if (y > 0) { v = Math.min(v, d[p - W] + 1); if (x > 0) v = Math.min(v, d[p - W - 1] + 1.4); if (x < W - 1) v = Math.min(v, d[p - W + 1] + 1.4); }
+    d[p] = v;
+  }
+  for (let y = H - 1; y >= 0; y--) for (let x = W - 1; x >= 0; x--) {
+    const p = y * W + x;
+    if (!d[p]) continue;
+    let v = d[p];
+    if (x < W - 1) v = Math.min(v, d[p + 1] + 1);
+    if (y < H - 1) { v = Math.min(v, d[p + W] + 1); if (x < W - 1) v = Math.min(v, d[p + W + 1] + 1.4); if (x > 0) v = Math.min(v, d[p + W - 1] + 1.4); }
+    d[p] = v;
+  }
+  return d;
+}
 
 // Mean of a (2r+1)^2 box around every pixel, from an integral image.
 function boxMean(v, W, H, r) {
