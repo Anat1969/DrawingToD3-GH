@@ -384,6 +384,24 @@ function showReading(r) {
     : `${auto ? 'זוהה דבר' : 'נקרא כדבר'}: הגוף מנופח אל המתבונן, והחוט עוטף את המתאר.`;
 }
 
+/* ---------------- Reading: an object, or a landscape laid out in depth ---------------- */
+state.reading = 'auto';
+function setReading(next) {
+  state.reading = next;
+  document.querySelectorAll('[data-reading]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.reading === next)));
+}
+document.querySelectorAll('[data-reading]').forEach((b) => b.addEventListener('click', () => {
+  setReading(b.dataset.reading);
+  if (state.phase === 'sculpted' && state.sculpt && state.engine === 'line') renderSculpt(false);
+}));
+function showReading(r) {
+  const note = document.getElementById('readingNote');
+  const auto = state.reading === 'auto';
+  note.textContent = r.reading === 'scene'
+    ? `${auto ? 'זוהה נוף' : 'נקרא כנוף'}: קו אופק ב-${Math.round(r.horizon * 100)}% מהגובה. הקרקע נפרשת לעומק, השמיים עומדים מאחור, ו${r.standing ? 'הדבר העומד' : 'כל מה שבתמונה'} ${r.standing ? 'עומד במקום שבו הוא נוגע בקרקע' : 'שוכב על הקרקע'}. "חזית" מחזירה למבט של הציור.`
+    : `${auto ? 'זוהה דבר' : 'נקרא כדבר'}: הגוף מנופח אל המתבונן, והחוט עוטף את המתאר.`;
+}
+
 /* ---------------- Drawing the work from the first line (animation) ---------------- */
 const play = { on: false, p: 1, last: 0, frame: 0, recorder: null };
 const fmt = (sec) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
