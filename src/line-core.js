@@ -116,8 +116,6 @@ export function extractStrokes(img, opts = {}) {
  * @returns {{path:Array<[number,number]>, drawn:number, offInk:number}} pixel coords
  */
 export function threadThroughInk(strokes, opts = {}) {
-  const [W, H] = strokes.size || [0, 0];
-  const ink = strokes.ink;
   if (!strokes.length) return { path: [], drawn: 0, offInk: 0 };
   const left = strokes.slice();
   // Start at the top: the drawing is read from the top down.
@@ -127,7 +125,7 @@ export function threadThroughInk(strokes, opts = {}) {
   if (first.at(-1)[1] < first[0][1]) first = first.slice().reverse();
   const path = first.map((p) => [p[0], p[1]]);
   let drawn = pathLength(first), offInk = 0;
-  const maxRoute = (opts.maxRoute ?? 0.75) * Math.max(W, H);
+  const route = makeRouter(strokes, opts);
   while (left.length) {
     const t = path.at(-1);
     let b = 0, flip = false, bd = Infinity;
@@ -139,15 +137,46 @@ export function threadThroughInk(strokes, opts = {}) {
     const next = left.splice(b, 1)[0];
     const l = flip ? next.slice().reverse() : next;
     if (bd > 2.5) {
-      const route = ink && bd < maxRoute ? routeOnInk(ink, W, H, t, l[0]) : null;
-      const hop = route || [t, l[0]];
+      const r = route(t, l[0], bd);
+      const hop = r || [t, l[0]];
       for (let i = 1; i < hop.length - 1; i++) path.push(hop[i]);
-      offInk += route ? route.off : bd;
+      offInk += r ? r.off : bd;
     }
     for (const p of l) path.push([p[0], p[1]]);
     drawn += pathLength(l);
   }
   return { path: simplifyRoute(path), drawn, offInk };
+}
+
+/**
+ * A router over the drawing's ink (pixel coords of the stroke image): (a, b, gap?) => pixel
+ * path with .off, or null. Short gaps on the full map, long ones coarse-to-fine.
+ */
+export function makeRouter(strokes, opts = {}) {
+  const [W, H] = strokes.size || [0, 0];
+  const ink = strokes.ink;
+  const maxRoute = (opts.maxRoute ?? 0.75) * Math.max(W, H);
+  // Long jumps are searched on a coarse map of the ink (3x smaller, 9x fewer pixels): a route
+  // planner's coarse-to-fine step. A pixel of the coarse map is ink if any pixel under it is.
+  const F = 3, cw = Math.ceil(W / F), ch = Math.ceil(H / F);
+  let coarse = null;
+  const coarseInk = () => {
+    if (coarse) return coarse;
+    coarse = new Uint8Array(cw * ch);
+    if (ink) for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (ink[y * W + x]) coarse[((y / F) | 0) * cw + ((x / F) | 0)] = 1;
+    return coarse;
+  };
+  return (a, b, gap = Math.hypot(b[0] - a[0], b[1] - a[1])) => {
+    if (!ink || gap >= maxRoute) return null;
+    if (gap < 40) return routeOnInk(ink, W, H, a, b);
+    const r = routeOnInk(coarseInk(), cw, ch, [a[0] / F, a[1] / F], [b[0] / F, b[1] / F]);
+    if (!r) return routeOnInk(ink, W, H, a, b);
+    const pts = r.map((q) => [q[0] * F + 1, q[1] * F + 1]);
+    pts[0] = [a[0], a[1]];
+    pts[pts.length - 1] = [b[0], b[1]];
+    pts.off = r.off * F;
+    return pts;
+  };
 }
 
 // A* on the pixel grid: moving along ink costs 1, across paper 12. Diagonal steps cost sqrt 2.
@@ -348,7 +377,7 @@ export function stitchLoops(a, zAt, toW, opts = {}) {
   const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
   const wave = () => { const f = [0.013 + rnd() * 0.015, 0.04 + rnd() * 0.03, 0.09 + rnd() * 0.05], ph = [rnd() * 6.3, rnd() * 6.3, rnd() * 6.3]; return (t) => Math.sin(t * f[0] + ph[0]) * 0.55 + Math.sin(t * f[1] + ph[1]) * 0.3 + Math.sin(t * f[2] + ph[2]) * 0.15; };
   const wPitch = wave(), wReach = wave(), wLean = wave();
-  const pitch0 = size * (0.18 - 0.135 * amount);       // pixels of outline per turn
+  const pitch0 = size * (0.165 - 0.125 * amount);      // pixels of outline per turn
   const reach0 = size * (0.022 + 0.02 * amount);       // how far the stitch bites into the body
   const lift = opts.lift || 0;
   const Dat = (x, y) => sampleField(D, W, H, x, y);
