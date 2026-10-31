@@ -26,6 +26,7 @@ const el = {
   service: $('service'), serviceText: $('serviceText'), serviceHint: $('serviceHint'),
   archiveList: $('archiveList'), archiveEmpty: $('archiveEmpty'),
   skOffset: $('skOffset'), skOffsetVal: $('skOffsetVal'), skThickness: $('skThickness'), skThicknessVal: $('skThicknessVal'),
+  skDepth: $('skDepth'), skDepthVal: $('skDepthVal'), skWrap: $('skWrap'), skWrapVal: $('skWrapVal'), skFront: $('skFront'), sketchPanel: document.querySelector('.sketch-panel'),
   skSnap: $('skSnap'), skMirror: $('skMirror'), skUndo: $('skUndo'), skRedo: $('skRedo'), skNew: $('skNew'), skStatus: $('skStatus'),
 };
 
@@ -814,6 +815,10 @@ function syncSketchControls() {
   const p = sketch.params;
   document.querySelectorAll('[data-tool]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tool === sketch.tool)));
   document.querySelectorAll('[data-plane]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.plane === p.plane)));
+  document.querySelectorAll('[data-result]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.result === p.result)));
+  el.sketchPanel.dataset.shows = p.result;
+  el.skDepth.value = Math.round(p.depth * 100); el.skDepthVal.textContent = el.skDepth.value;
+  el.skWrap.value = Math.round(p.wrap * 100); el.skWrapVal.textContent = el.skWrap.value;
   el.skOffset.value = Math.round(p.offset * 100); el.skOffsetVal.textContent = el.skOffset.value;
   el.skThickness.value = Math.round(p.thickness * 100); el.skThicknessVal.textContent = el.skThickness.value;
   el.skSnap.checked = p.snap;
@@ -835,7 +840,10 @@ function onSketchChange(st) {
   setPhase(state.phase);
   const kept = saveDraft();
   if (!kept) setSketchStatus('הטיוטה גדולה מדי לשמירה אוטומטית בדפדפן. שומרים לארכיון כדי לא לאבד אותה.', 'error');
-  else if (!st.count) setSketchStatus(PLANE_HINT[sketch.params.plane]);
+  else if (!st.count) setSketchStatus(st.result === 'sculpt' ? 'מציירים צורה עם קו מתאר סגור. אחרי כל קו הציור נקרא, והחוט מתלפף סביב הנפח.' : PLANE_HINT[sketch.params.plane]);
+  else if (st.busy) setSketchStatus('קוראים את הציור ומלפפים...');
+  else if (st.result === 'sculpt' && st.error) setSketchStatus('אין עדיין צורה סגורה ללפף סביבה. סוגרים את קו המתאר, והחוט יתלפף סביב הנפח.', 'error');
+  else if (st.result === 'sculpt') setSketchStatus(`${st.groups} קווים · ${st.loops} ליפופים סביב הנפח · ${st.closed ? 'חוט סגור, מוכן להדפסה' : 'בודקים גוף סגור'}. מקיפים כדי לראות את הגב.`, st.closed ? 'ok' : '');
   else setSketchStatus(`${st.groups} קווים · ${st.closed ? 'חוט סגור, מוכן להדפסה' : 'בודקים גוף סגור'} · הטיוטה נשמרת לבד.`, st.closed ? 'ok' : '');
 }
 function setSketchStatus(text, kind = '') {
@@ -854,6 +862,15 @@ document.querySelectorAll('[data-plane]').forEach((b) => b.addEventListener('cli
   setSketchStatus(PLANE_HINT[b.dataset.plane]);
   saveDraft();
 }));
+document.querySelectorAll('[data-result]').forEach((b) => b.addEventListener('click', () => {
+  stopDrawing(true);
+  sketch.setParams({ result: b.dataset.result });
+  syncSketchControls();
+  saveDraft();
+}));
+el.skDepth.addEventListener('input', () => { el.skDepthVal.textContent = el.skDepth.value; sketch.setParams({ depth: el.skDepth.value / 100 }); saveDraft(); });
+el.skWrap.addEventListener('input', () => { el.skWrapVal.textContent = el.skWrap.value; sketch.setParams({ wrap: el.skWrap.value / 100 }); saveDraft(); });
+el.skFront.addEventListener('click', () => sketch.front());
 el.skOffset.addEventListener('input', () => { el.skOffsetVal.textContent = el.skOffset.value; sketch.setParams({ offset: el.skOffset.value / 100 }); saveDraft(); });
 el.skThickness.addEventListener('input', () => { el.skThicknessVal.textContent = el.skThickness.value; sketch.setParams({ thickness: el.skThickness.value / 100 }); });
 el.skSnap.addEventListener('change', () => { sketch.setParams({ snap: el.skSnap.checked }); saveDraft(); });

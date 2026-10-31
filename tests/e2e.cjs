@@ -209,6 +209,38 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
   }
   const loop = (cx, cy, r, n = 28, turns = 1) => Array.from({ length: n + 1 }, (_, i) => { const a = (i / n) * Math.PI * 2 * turns; return [cx + Math.cos(a) * r * 0.7, cy + Math.sin(a) * r]; });
   const groups = async () => Number(((await page.locator('#stageCaption').innerText()).match(/(\d+)\s*קווים/) || [])[1]);
+  // Default: the drawing is read and wound into space (Anat: "the line is not flat, it wraps space")
+  ok(await page.getAttribute('[data-result="sculpt"]', 'aria-pressed') === 'true', 'reading the drawing into a wound sculpture is the default');
+  const readDone = () => page.waitForFunction(() => /ליפופים|אין עדיין/.test(document.querySelector('#skStatus').textContent), null, { timeout: 15000 });
+  const pear = Array.from({ length: 49 }, (_, i) => { const a = (i / 48) * Math.PI * 2; const r = 0.2 + 0.06 * Math.sin(a); return [0.5 + Math.cos(a) * r * 0.75, 0.55 + Math.sin(a) * r * 1.1]; });
+  await stroke(pear);
+  await stroke([[0.45, 0.45], [0.5, 0.55], [0.47, 0.7]]);
+  await readDone();
+  const wraps = Number(((await page.locator('#skStatus').innerText()).match(/(\d+) ליפופים/) || [])[1]);
+  ok(wraps >= 10, `the drawn shape is read and the thread winds around its volume (${wraps} wraps)`);
+  const zDepth = Number((await page.locator('#factSize').innerText()).split('×').map((v) => v.trim())[2]);
+  ok(zDepth >= 20, `the result is not flat: depth is ${zDepth}% of the size`);
+  ok(await page.locator('#factClosed').innerText() === 'כן', 'the wound thread is a closed body');
+  await page.screenshot({ path: path.join(OUT, '10a2-sketch-read.png') });
+  await page.mouse.move(...at(0.5, 0.5));
+  await page.mouse.down({ button: 'right' });
+  await page.mouse.move(...at(0.78, 0.47), { steps: 15 });
+  await page.mouse.up({ button: 'right' });
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: path.join(OUT, '10a3-sketch-read-side.png') });
+  await page.locator('#skDepth').fill('100');
+  await page.waitForTimeout(800);
+  const zDeeper = Number((await page.locator('#factSize').innerText()).split('×').map((v) => v.trim())[2]);
+  ok(zDeeper > zDepth, `depth slider pushes the body further out of the page (${zDepth} to ${zDeeper})`);
+  await page.locator('#skWrap').fill('0');
+  await page.waitForTimeout(800);
+  ok(/ 0 ליפופים/.test(await page.locator('#skStatus').innerText()), 'wrap at 0 leaves only the drawn lines on the body');
+  await page.locator('#skWrap').fill('45');
+  await page.click('#skFront');
+  await page.click('#skNew');
+  // As drawn: each line stays where the pen put it
+  await page.click('[data-result="line"]');
+  ok(await page.locator('[data-plane="floor"]').isVisible() && await page.locator('#skDepth').isHidden(), 'as drawn: the sheet tools replace depth and wrap');
   await stroke(loop(0.5, 0.45, 0.22));
   ok(await groups() === 1, 'a drag draws one line in space');
   ok(await page.locator('#factClosed').innerText() === 'כן', 'the drawn wire is a closed body (printable)');

@@ -315,3 +315,8 @@ input[type="range"] { accent-color: var(--window); width: 120px; }
 .keys b[dir="ltr"] { font-family: var(--mono); font-weight: 500; letter-spacing: 0.04em; }
 .sketch-panel .status { margin-top: 0; }
 .stage.sketching canvas { touch-action: none; }
+
+/* Result modes: the sheet tools belong to "as drawn", depth and wrap to the wound sculpture. */
+.sk-sculpt { display: grid; gap: 14px; }
+.sketch-panel[data-shows="sculpt"] .sk-line { display: none; }
+.sketch-panel[data-shows="line"] .sk-sculpt { display: none; }
