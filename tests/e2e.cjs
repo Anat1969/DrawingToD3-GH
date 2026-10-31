@@ -188,6 +188,117 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
   await page.click('#resetBtn');
   await page.goto(BASE + '/#/');
 
+  // 4c. Drawing in 3D: the pen draws straight into space
+  await page.click('a[data-route="draw"]');
+  await page.waitForFunction(() => !document.querySelector('.sketch-panel').hidden);
+  ok(await page.evaluate(() => location.hash) === '#/draw', 'nav opens drawing in space');
+  ok(await page.locator('a[data-route="draw"][aria-current="page"]').count() === 1, 'nav marks drawing in space as current');
+  ok(await page.locator('[data-for="image"]:visible').count() === 0, 'image tools step aside while drawing in space');
+  ok(await page.locator('#stage.paper').count() === 1, 'drawing in space sits on paper');
+  ok(await page.locator('.btn.primary:visible').count() <= 1, 'at most one lit button');
+  await page.waitForTimeout(600);
+  await page.screenshot({ path: path.join(OUT, '10a-sketch-empty.png') });
+  const cv = await page.locator('#stage canvas').boundingBox();
+  const at = (fx, fy) => [cv.x + cv.width * fx, cv.y + cv.height * fy];
+  async function stroke(pts, opts = {}) {
+    await page.mouse.move(...at(...pts[0]));
+    await page.mouse.down(opts);
+    for (let i = 1; i < pts.length; i++) await page.mouse.move(...at(...pts[i]), { steps: 6 });
+    await page.mouse.up(opts);
+    await page.waitForTimeout(150);
+  }
+  const loop = (cx, cy, r, n = 28, turns = 1) => Array.from({ length: n + 1 }, (_, i) => { const a = (i / n) * Math.PI * 2 * turns; return [cx + Math.cos(a) * r * 0.7, cy + Math.sin(a) * r]; });
+  const groups = async () => Number(((await page.locator('#stageCaption').innerText()).match(/(\d+)\s*קווים/) || [])[1]);
+  await stroke(loop(0.5, 0.45, 0.22));
+  ok(await groups() === 1, 'a drag draws one line in space');
+  ok(await page.locator('#factClosed').innerText() === 'כן', 'the drawn wire is a closed body (printable)');
+  ok(await page.locator('#saveBox').isVisible(), 'save appears once there is a line');
+  // Continue the first line from its start: the second line snaps to it.
+  await stroke([[0.5 + 0.22 * 0.7, 0.45], [0.75, 0.3], [0.82, 0.18]]);
+  ok(await groups() === 2, 'a second line continues from the first');
+  // Orbit with the right button, then draw at another depth.
+  await page.mouse.move(...at(0.5, 0.5));
+  await page.mouse.down({ button: 'right' });
+  await page.mouse.move(...at(0.75, 0.48), { steps: 12 });
+  await page.mouse.up({ button: 'right' });
+  await page.waitForTimeout(300);
+  ok(await groups() === 2, 'right drag orbits and does not draw');
+  await stroke(loop(0.5, 0.5, 0.18, 36, 1.5));
+  ok(await groups() === 3, 'after orbiting, the next line lands at another depth');
+  const size2 = await page.locator('#factSize').innerText();
+  ok(!/^100 × 100 × 0$|NaN/.test(size2) && /\d+ × \d+ × \d+/.test(size2), `the drawing has real depth (${size2})`);
+  // Space held: orbit with the left button.
+  await page.keyboard.down('Space');
+  await stroke([[0.3, 0.6], [0.6, 0.62]]);
+  await page.keyboard.up('Space');
+  ok(await groups() === 3, 'holding Space orbits instead of drawing');
+  // Symmetry: one gesture, two lines.
+  await page.click('#skMirror');
+  await page.click('[data-plane="floor"]');
+  ok(await page.getAttribute('[data-plane="floor"]', 'aria-pressed') === 'true', 'floor sheet can be chosen');
+  await page.locator('#skOffset').fill('-60');
+  await stroke([[0.62, 0.7], [0.7, 0.75], [0.8, 0.72]]);
+  ok(await groups() === 4, 'symmetric line counts as one gesture');
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: path.join(OUT, '10b-sketch.png') });
+  // Undo and redo, by button and by keyboard.
+  await page.click('#skUndo');
+  ok(await groups() === 3, 'undo removes the last line (with its mirror)');
+  await page.click('#skRedo');
+  ok(await groups() === 4, 'redo brings it back');
+  await page.keyboard.press('Control+z');
+  await page.waitForTimeout(150);
+  ok(await groups() === 3, 'Ctrl+Z undoes');
+  await page.keyboard.press('Control+Shift+z');
+  await page.waitForTimeout(150);
+  ok(await groups() === 4, 'Ctrl+Shift+Z redoes');
+  await page.locator('#skThickness').fill('70');
+  await page.waitForTimeout(300);
+  ok(await page.locator('#factClosed').innerText() === 'כן', 'thicker wire is still closed');
+  // Clay and ink modes work on the drawing too.
+  await page.click('[data-mode="clay"]');
+  await page.waitForTimeout(300);
+  await page.click('[data-mode="source"]');
+  // Replay in the real drawing order
+  ok(await page.locator('#anim').isVisible(), 'the drawing can be replayed from the first line');
+  await page.locator('#scrub').fill('400');
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: path.join(OUT, '10c-sketch-replay.png') });
+  await page.locator('#scrub').fill('1000');
+  // Export
+  [dl] = await Promise.all([page.waitForEvent('download'), page.click('[data-export="stl"]')]);
+  const sketchStl = path.join(OUT, 'sketch.stl'); await dl.saveAs(sketchStl);
+  ok(fs.statSync(sketchStl).size > 20000 && dl.suggestedFilename() === 'sketch.stl', `the drawing exports as STL (${fs.statSync(sketchStl).size} bytes)`);
+  // Draft survives a reload before saving
+  await page.reload();
+  await page.waitForFunction(() => /\d+\s*קווים/.test(document.querySelector('#stageCaption').textContent), null, { timeout: 8000 });
+  ok(await groups() === 4, 'the draft comes back after reload, without saving');
+  ok(await page.locator('#skThickness').inputValue() === '70' && await page.locator('#skMirror').isChecked(), 'draft settings come back');
+  // Save to the archive and reopen from it
+  await page.fill('#workName', 'כדור צמר');
+  await page.click('#saveBtn');
+  await page.waitForFunction(() => location.hash.startsWith('#/draw/w'));
+  ok(/נשמר בארכיון/.test(await page.locator('#skStatus').innerText()), 'the drawing is saved to the archive');
+  const sketchHash = await page.evaluate(() => location.hash);
+  await page.click('#skNew');
+  ok(await groups() === 0, 'new drawing starts empty');
+  await page.click('#skUndo');
+  ok(await groups() === 4, 'a new drawing can be undone');
+  await page.click('#skNew');
+  await page.click('a[data-route="archive"]');
+  await page.waitForSelector('#archiveList li[data-kind="work"] >> text=כדור צמר');
+  const card = page.locator('#archiveList li[data-kind="work"]', { hasText: 'כדור צמר' });
+  ok(/ציור במרחב/.test(await card.locator('.meta').innerText()), 'archive card names the drawing in space');
+  ok(await card.locator('img').count() === 1, 'archive card has a picture of the drawing');
+  await card.locator('a.btn').click();
+  await page.waitForFunction((h) => location.hash === h, sketchHash);
+  await page.waitForFunction(() => /4\s*קווים/.test(document.querySelector('#stageCaption').textContent), null, { timeout: 8000 }).catch(() => {});
+  ok(await groups() === 4 && await page.locator('#workName').inputValue() === 'כדור צמר', 'the drawing reopens from the archive');
+  await page.screenshot({ path: path.join(OUT, '10d-sketch-reopened.png') });
+  await page.click('a.app-name');
+  await page.waitForFunction(() => !document.querySelector('[data-for="image"].panel').hidden);
+  ok(await page.locator('#stage.paper').count() === 0 && /מודל לדוגמה/.test(await page.locator('#factSource').innerText()), 'back to the studio: the drawing tools step aside');
+
   // 5. Unconfigured server message (AI engine)
   mode = 'unconfigured';
   await page.click('label:has(input[name="engine"][value="ai"])');
@@ -221,7 +332,7 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
 
   // 6. Successful conversion
   mode = 'ok';
-  await page.click('label:has(input[value="0"])');
+  await page.click('label:has(input[name="texture"][value="0"])');
   await page.click('#convertBtn');
   await page.waitForFunction(() => document.querySelector('#progressPct').textContent === '40%', null, { timeout: 8000 });
   ok(true, 'progress shows percent while processing');
@@ -244,7 +355,7 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
   await page.waitForTimeout(300);
   await page.screenshot({ path: path.join(OUT, '07-menu.png') });
   await page.evaluate(() => [...document.querySelector('ai-menu').shadowRoot.querySelectorAll('.item')].find((b) => b.textContent.includes('מצב עריכה')).click());
-  const delShown = await page.waitForFunction(() => document.querySelectorAll('#archiveList button.quiet').length === 2, null, { timeout: 5000 }).then(() => true, () => false);
+  const delShown = await page.waitForFunction(() => document.querySelectorAll('#archiveList button.quiet').length === 3, null, { timeout: 5000 }).then(() => true, () => false);
   ok(delShown, 'edit mode from logo menu reveals delete on every card');
   await page.click('#archiveList li[data-kind="task"] a.btn');
   await page.waitForFunction(() => location.hash === '#/model/task_abc123' && !document.querySelector('[data-view="studio"]').hidden);
@@ -252,14 +363,16 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
   await page.click('a[data-route="archive"]');
   await page.click('#archiveList li[data-kind="task"] button:has-text("מחיקה")');
   await page.waitForTimeout(300);
-  ok(await page.locator('#archiveList li').count() === 1, 'delete removes the item');
-  await page.click('#archiveList li[data-kind="work"] button:has-text("מחיקה")');
+  ok(await page.locator('#archiveList li').count() === 2, 'delete removes the item');
+  await page.locator('#archiveList li[data-kind="work"] button:has-text("מחיקה")').first().click();
   await page.waitForTimeout(300);
-  ok(await page.locator('#archiveList li').count() === 0, 'saved work can be deleted too');
+  await page.locator('#archiveList li[data-kind="work"] button:has-text("מחיקה")').first().click();
+  await page.waitForTimeout(300);
+  ok(await page.locator('#archiveList li').count() === 0, 'saved works can be deleted too');
 
   // 8. Method
   await page.click('a[data-route="method"]');
-  ok(await page.locator('.method li').count() === 9, 'method page renders');
+  ok(await page.locator('.method li').count() === 10, 'method page renders');
   await page.screenshot({ path: path.join(OUT, '08-method.png') });
 
   // 9. Local 3D file
@@ -274,7 +387,7 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
   const m = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
   const mp = await m.newPage();
   if (AI_MENU) await mp.route('**/ai-menu.js', (r) => r.fulfill({ path: AI_MENU, contentType: 'text/javascript' }));
-  for (const h of ['#/', '#/archive', '#/method']) {
+  for (const h of ['#/', '#/draw', '#/archive', '#/method']) {
     await mp.goto(BASE + '/' + h);
     await mp.waitForTimeout(1200);
     const over = await mp.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);

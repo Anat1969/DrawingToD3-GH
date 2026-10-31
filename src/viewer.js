@@ -100,6 +100,7 @@ export function createStage(container, { onFrame } = {}) {
   new ResizeObserver(resize).observe(container);
   resize();
 
+  const hooks = []; // per-frame work of other modules (the 3D drawing sheet and pen)
   let running = true;
   document.addEventListener('visibilitychange', () => {
     running = document.visibilityState === 'visible';
@@ -108,6 +109,7 @@ export function createStage(container, { onFrame } = {}) {
   function loop() {
     if (!running) return;
     controls.update();
+    for (const fn of hooks) fn();
     renderer.render(scene, camera);
     if (onFrame && holder) onFrame(project());
     requestAnimationFrame(loop);
@@ -136,7 +138,7 @@ export function createStage(container, { onFrame } = {}) {
       if (!o.isMesh) return;
       o.castShadow = true;
       o.receiveShadow = true;
-      vs(o).source = o.material;
+      if (!vs(o).source) vs(o).source = o.material; // a refreshed mesh keeps its real material
       meshes.push(o);
       const g = o.geometry;
       tris += g.index ? g.index.count / 3 : g.attributes.position.count / 3;
@@ -185,6 +187,47 @@ export function createStage(container, { onFrame } = {}) {
     return info;
   }
 
+  // A subject in its own world coordinates, not normalised: the 3D drawing needs a space
+  // that stays put while lines are added to it. refresh() re-reads it after each change.
+  let rawMeta = null;
+  function setRaw(object, meta = {}, { view } = {}) {
+    clear();
+    holder = new THREE.Group();
+    holder.add(object);
+    scene.add(holder);
+    rawMeta = meta;
+    if (view) {
+      controls.target.set(...view.target);
+      camera.position.set(...view.position);
+      controls.minDistance = 0.8;
+      controls.maxDistance = 14;
+      scene.fog.near = 7;
+      scene.fog.far = 22;
+      controls.update();
+    }
+    return refresh();
+  }
+
+  function refresh(meta) {
+    if (!holder || !rawMeta) return info;
+    if (meta) rawMeta = { ...rawMeta, ...meta };
+    const { meshes, tris } = prepare(holder);
+    const box = new THREE.Box3();
+    for (const m of meshes) box.expandByObject(m);
+    let sphere, proportion = null;
+    if (box.isEmpty()) {
+      sphere = new THREE.Sphere(new THREE.Vector3(0, 1, 0), 1);
+    } else {
+      sphere = box.getBoundingSphere(new THREE.Sphere());
+      const size = box.getSize(new THREE.Vector3());
+      const max = Math.max(size.x, size.y, size.z, 1e-6);
+      proportion = [size.x, size.y, size.z].map((v) => Math.round((v / max) * 100));
+    }
+    info = { meshes, tris, sphere, proportion, ...rawMeta };
+    applyMode(mode);
+    return info;
+  }
+
   function clear() {
     if (!holder) return;
     scene.remove(holder);
@@ -196,6 +239,7 @@ export function createStage(container, { onFrame } = {}) {
     });
     holder = null;
     info = null;
+    rawMeta = null;
   }
 
   const clay = new THREE.MeshStandardMaterial({ color: 0xcfc4b2, roughness: 0.92, metalness: 0 });
@@ -298,7 +342,9 @@ export function createStage(container, { onFrame } = {}) {
   }
 
   return {
-    setObject, loadUrl, clear, exportFile, snapshot,
+    setObject, setRaw, refresh, loadUrl, clear, exportFile, snapshot,
+    scene, camera, controls,
+    addFrameHook(fn) { hooks.push(fn); },
     setMode: applyMode,
     canvas: renderer.domElement,
     setBackdrop(next) { backdrop = next; applyMode(mode); },
