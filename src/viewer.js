@@ -350,6 +350,16 @@ export function createStage(container, { onFrame } = {}) {
     setBackdrop(next) { backdrop = next; applyMode(mode); },
     setLight,
     setSpin(on) { controls.autoRotate = on; },
+    /** Straight on, the way the drawing was made: the view to judge resemblance from. */
+    viewFront() {
+      if (!info) return;
+      const c = info.sphere.center;
+      const dist = (info.sphere.radius / Math.sin(THREE.MathUtils.degToRad(camera.fov) / 2)) * 1.12;
+      controls.autoRotate = false;
+      controls.target.copy(c);
+      camera.position.set(c.x, c.y, c.z + dist);
+      controls.update();
+    },
     get info() { return info; },
     get hasSubject() { return !!holder; },
     THREE,

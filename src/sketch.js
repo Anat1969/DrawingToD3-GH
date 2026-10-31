@@ -316,11 +316,9 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
         if (token !== readToken) return;
         page = { version, prepared, layout };
       }
-      // The engine works in page units; ask it for the thickness that lands on the slider's weight.
-      const want = core.radiusFor(params.thickness) / page.layout.scale;
-      const thickness = Math.max(0, Math.min(1, (want - 0.004) / 0.02));
+      // The engine works in page units: the wire radius is given so it lands on the slider's weight.
       const r = lineSculpture(page.prepared, {
-        depth: params.depth, wrap: params.wrap, thickness,
+        depth: params.depth, wrap: params.wrap, radius: core.radiusFor(params.thickness) / page.layout.scale,
         sensitivity: 0.75, cloud: 0, continuous: true,
       });
       if (token !== readToken) return;
