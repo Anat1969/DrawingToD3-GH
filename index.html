@@ -30,6 +30,7 @@
       </a>
       <nav class="nav" aria-label="ניווט ראשי">
         <a href="#/" data-route="studio">סטודיו</a>
+        <a href="#/draw" data-route="draw">ציור במרחב</a>
         <a href="#/archive" data-route="archive">ארכיון</a>
         <a href="#/method" data-route="method">שיטה</a>
       </nav>
@@ -40,10 +41,15 @@
   <main id="main" tabindex="-1">
     <!-- STUDIO -->
     <section class="view" data-view="studio" aria-labelledby="studio-title">
-      <div class="intro">
+      <div class="intro" data-for="image">
         <p class="eyebrow">01 / סטודיו</p>
         <h1 id="studio-title">ציור אחד.<br><span>אובייקט שאפשר להקיף.</span></h1>
         <p class="lede">מעלים ציור. הקו השחור הופך לחוט רציף במרחב, או לגוף סגור. בוחנים אותו מכל זווית, שומרים לארכיון ומורידים להדפסה.</p>
+      </div>
+      <div class="intro" data-for="sketch" hidden>
+        <p class="eyebrow">02 / ציור במרחב</p>
+        <h1>קו אחד.<br><span>נמשך ישר אל תוך החלל.</span></h1>
+        <p class="lede">מציירים על משטח שקוף.<br>מקיפים את העבודה, והמשטח מסתובב עם המבט.<br>לחיצה ליד קו קיים ממשיכה אותו אל העומק.</p>
       </div>
 
       <div class="studio">
@@ -82,7 +88,51 @@
 
         <!-- The workbench: upload, convert, download. -->
         <aside class="bench" aria-label="שולחן עבודה">
-          <section class="panel" aria-labelledby="up-title">
+          <section class="panel sketch-panel" data-for="sketch" aria-labelledby="sk-title" hidden>
+            <h2 id="sk-title"><b>עט:</b> ציור במרחב</h2>
+            <div class="sk-row">
+              <span class="legend"><b>כלי:</b> מה עושה גרירה</span>
+              <div class="seg" role="group" aria-label="כלי">
+                <button type="button" data-tool="pen" aria-pressed="true">עט</button>
+                <button type="button" data-tool="orbit" aria-pressed="false">הקפה</button>
+              </div>
+            </div>
+            <div class="sk-row">
+              <span class="legend"><b>משטח:</b> על מה העט מצייר</span>
+              <div class="seg" role="group" aria-label="משטח הציור">
+                <button type="button" data-plane="view" aria-pressed="true">מול המבט</button>
+                <button type="button" data-plane="wall" aria-pressed="false">קיר</button>
+                <button type="button" data-plane="side" aria-pressed="false">צד</button>
+                <button type="button" data-plane="floor" aria-pressed="false">רצפה</button>
+              </div>
+            </div>
+            <label class="slider">
+              <span><b>עומק המשטח:</b> קדימה ואחורה</span>
+              <input type="range" id="skOffset" min="-100" max="100" value="0">
+              <output id="skOffsetVal" dir="ltr">0</output>
+            </label>
+            <label class="slider">
+              <span><b>עובי:</b> עובי החוט</span>
+              <input type="range" id="skThickness" min="0" max="100" value="35">
+              <output id="skThicknessVal" dir="ltr">35</output>
+            </label>
+            <label class="check"><input type="checkbox" id="skSnap" checked> <span><b>המשך מקו קיים</b> לחיצה ליד קו מתחילה ממנו, והמשטח עובר דרכו</span></label>
+            <label class="check"><input type="checkbox" id="skMirror"> <span><b>סימטריה</b> כל קו מצויר גם בצד השני</span></label>
+            <div class="actions">
+              <button class="btn" id="skUndo" type="button" disabled>ביטול</button>
+              <button class="btn" id="skRedo" type="button" disabled>חזרה</button>
+              <button class="btn quiet" id="skNew" type="button" disabled>ציור חדש</button>
+            </div>
+            <ul class="keys" aria-label="קיצורים">
+              <li><b>גרירה:</b> ציור</li>
+              <li><b>גרירה ימנית, שתי אצבעות או רווח:</b> הקפה</li>
+              <li><b>גלגלת:</b> זום</li>
+              <li><b dir="ltr">Ctrl+Z</b> ביטול</li>
+            </ul>
+            <p class="status" id="skStatus" role="status" aria-live="polite"></p>
+          </section>
+
+          <section class="panel" data-for="image" aria-labelledby="up-title">
             <h2 id="up-title"><b>ציור:</b> העלאה</h2>
             <button class="drop" id="drop" type="button" aria-describedby="drop-hint">
               <img id="preview" class="preview" alt="הציור שנבחר" hidden>
@@ -183,7 +233,7 @@
               <label class="name-field"><span><b>שם:</b></span><input type="text" id="workName" maxlength="80" autocomplete="off"></label>
               <button class="btn" id="saveBtn" type="button">שמירה לארכיון</button>
             </div>
-            <div class="actions">
+            <div class="actions" data-for="image">
               <button class="btn" id="openLocalBtn" type="button">פתיחת קובץ תלת-ממד</button>
             </div>
             <input id="localFile" type="file" accept=".glb,.gltf,.stl,.obj" hidden>
@@ -195,7 +245,7 @@
     <!-- ARCHIVE -->
     <section class="view" data-view="archive" aria-labelledby="archive-title" hidden>
       <div class="intro">
-        <p class="eyebrow">02 / ארכיון</p>
+        <p class="eyebrow">03 / ארכיון</p>
         <h1 id="archive-title">ארכיון העבודות</h1>
         <p class="lede">כל עבודה שנשמרה: הציור, ההגדרות ותמונת הפסל. פתיחה בונה את הפסל מחדש מהציור. נשמר בדפדפן הזה בלבד.</p>
       </div>
@@ -206,7 +256,7 @@
     <!-- METHOD -->
     <section class="view" data-view="method" aria-labelledby="method-title" hidden>
       <div class="intro">
-        <p class="eyebrow">03 / שיטה</p>
+        <p class="eyebrow">04 / שיטה</p>
         <h1 id="method-title">איך ציור הופך לגוף</h1>
         <p class="lede">מחולל המודלים מנחש עומק ונפח שאינם בציור. לכן התוצאה היא פרשנות, ולא שחזור. כך מקבלים את הפרשנות הטובה ביותר.</p>
       </div>
@@ -218,6 +268,7 @@
         <li><b>בדיקה:</b> חימר וקו<p>אחרי ההמרה עוברים למצב "חימר" כדי לשפוט צורה בלי צבע, ולמצב "קו" כדי לראות את המבנה.</p></li>
         <li><b>קו במרחב:</b> חוט<p>מוצאים את מרכז כל קו שחור (שלד בשיטת Zhang-Suen, 1984), עוקבים אחריו לקו רציף, ונותנים לו עומק: קו מתאר יושב על שפת הצורה, קו פנימי על פני הצורה. לולאות ליפוף עוברות על פני הצורה מלפנים, חוצות את השפה וחוזרות מאחור בזוויות שונות, כמו צמר שמלופף סביב גוף, והן יוצרות את הנפח. הכול מתחבר לחוט אחד. כתמי הצבע הם ריסוס רך בשקיפויות שונות בתוך החלל.</p></li>
         <li><b>גוף מנופח:</b> ניפוח<p>שיטת הניפוח של Teddy (Igarashi, 1999) ו-Monster Mash (2020): מזהים את קו המתאר, ממלאים את השטח הסגור, והמרחק מהקו הופך לגובה. הקו השחור בולט כנפח. התוצאה תבליט עגול דו-צדדי, לא ניחוש של הצד האחורי.</p></li>
+        <li><b>ציור במרחב:</b> משטח שקוף<p>העט מצייר על משטח שקוף שעומד מול המבט, או על קיר, צד או רצפה. מקיפים את העבודה, והקו הבא נוחת בעומק אחר. כך עבדו משטחי הציור של Mental Canvas (Julie Dorsey, אוניברסיטת ייל, Yale University, 2007). לחיצה ליד קו קיים מתחילה בדיוק ממנו, כדי שהעבודה תישאר חוט אחד, כמו פסלי התיל של אלכסנדר קלדר (Alexander Calder), פריז (Paris), מ-1926. קו האנך אל הרצפה מראה באיזה עומק העט נמצא. הקו מוחלק כמו יד, וההחלקה נבדקת: פחות מ-3% פניות חדות.</p></li>
         <li><b>בקרת איכות:</b> גוף סגור<p>אחרי כל פיסול נבדק שכל צלע משותפת לשני משולשים בדיוק. זה התנאי של תוכנות הדפסה לגוף אטום, והתוצאה מוצגת בשורה "גוף סגור להדפסה".</p></li>
         <li><b>הדפסה:</b> STL או 3MF<p>לפני הדפסה פותחים את הקובץ בתוכנת הפריסה ובודקים שהגוף סגור ובקנה המידה הנכון.</p></li>
       </ol>

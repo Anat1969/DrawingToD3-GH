@@ -123,7 +123,7 @@ export function lineSculpture(prepared, opts) {
  * timeline (drawn lines at pen speed, wrapping faster), a warm pen tip leads it, and the
  * colour is sprayed in at the end. set(p) with p from 0 to 1.
  */
-function drawingAnimation(group, wireGeometry, tl, cloudPoints, radius) {
+export function drawingAnimation(group, wireGeometry, tl, cloudPoints, radius) {
   const steps = tl.end.length;
   const duration = Math.max(10, Math.min(30, 8 + tl.duration * 0.45)); // seconds
   const lineShare = cloudPoints ? 0.86 : 1;

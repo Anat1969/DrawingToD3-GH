@@ -300,3 +300,18 @@ input[type="range"] { accent-color: var(--window); width: 120px; }
 .stage.paper .stage-caption { color: #6b6457; }
 .stage.paper .thirds i { background: rgba(23, 20, 15, 0.25); }
 .stage.paper .stage-note { color: #4a443a; }
+
+/* Drawing in 3D: the pen panel. Rows of label over control, the same rhythm as the sliders. */
+.sketch-panel { display: grid; gap: 14px; }
+.sketch-panel h2 { margin-bottom: 2px; }
+.sketch-panel .actions { margin-top: 2px; }
+.sk-row { display: grid; gap: 8px; min-width: 0; }
+.sk-row .seg { justify-self: start; max-width: 100%; flex-wrap: wrap; }
+.keys {
+  list-style: none; margin: 0; padding: 12px 0 0; border-top: 1px solid var(--line);
+  display: grid; gap: 4px; font-size: 12.5px; color: var(--muted);
+}
+.keys b { color: var(--paper); font-weight: 600; margin-inline-end: 6px; }
+.keys b[dir="ltr"] { font-family: var(--mono); font-weight: 500; letter-spacing: 0.04em; }
+.sketch-panel .status { margin-top: 0; }
+.stage.sketching canvas { touch-action: none; }

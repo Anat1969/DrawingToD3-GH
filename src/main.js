@@ -6,6 +6,8 @@ import { startConversion, getStatus, ApiError, ERRORS } from './api.js';
 import * as archive from './history.js';
 import { prepareSculpt, sculptMesh, lineSculpture } from './sculpt.js';
 import * as works from './store.js';
+import { createSketch } from './sketch.js';
+import { deserialize as readStrokes } from './sketch-core.js';
 
 const POLL_MS = 3000;
 const $ = (id) => document.getElementById(id);
@@ -23,11 +25,13 @@ const el = {
   saveBox: $('saveBox'), workName: $('workName'), saveBtn: $('saveBtn'),
   service: $('service'), serviceText: $('serviceText'), serviceHint: $('serviceHint'),
   archiveList: $('archiveList'), archiveEmpty: $('archiveEmpty'),
+  skOffset: $('skOffset'), skOffsetVal: $('skOffsetVal'), skThickness: $('skThickness'), skThicknessVal: $('skThicknessVal'),
+  skSnap: $('skSnap'), skMirror: $('skMirror'), skUndo: $('skUndo'), skRedo: $('skRedo'), skNew: $('skNew'), skStatus: $('skStatus'),
 };
 
 /* ---------------- State ---------------- */
 const ENGINES = ['line', 'local', 'ai'];
-const ENGINE_LABEL = { line: 'קו במרחב', local: 'גוף מנופח', ai: 'בינה מלאכותית' };
+const ENGINE_LABEL = { line: 'קו במרחב', local: 'גוף מנופח', ai: 'בינה מלאכותית', sketch: 'ציור במרחב' };
 const state = {
   drawing: null,   // { dataUrl, thumb, name }
   phase: 'idle',   // idle | ready | uploading | processing | done | failed
@@ -39,6 +43,8 @@ const state = {
   sculpt: null,         // drawing analysed once for the local engines
   workId: null,         // saved work currently open
   anim: null,           // drawing animation of the current line sculpture
+  mode: 'image',        // image (a drawing becomes a body) | sketch (drawing in 3D)
+  sketchId: null,       // saved 3D drawing currently open
 };
 function readEngine() { try { const v = localStorage.getItem('drawing3d.engine.v2'); return ENGINES.includes(v) ? v : 'line'; } catch { return 'line'; } }
 
@@ -50,6 +56,7 @@ try {
   console.error(err);
   el.note.textContent = 'הדפדפן לא תומך בתצוגה תלת-ממדית (WebGL). עדיין אפשר להמיר ולהוריד קבצים.';
 }
+const sketch = stage ? createSketch(stage, { onChange: onSketchChange, onBeforeDraw: () => stopDrawing(true) }) : null;
 
 function showSample() {
   if (!stage) return;
@@ -72,7 +79,7 @@ function annText(info) {
 function updateAnnotation(info) { if (ann) { ann.box.innerHTML = annText(info); ann.last = ''; } }
 function resetAnnotation() { ann = null; el.annotation.innerHTML = ''; }
 function drawAnnotation(p) {
-  if (!p || !stage || !stage.info) return;
+  if (!p || !stage || !stage.info || state.mode === 'sketch' || !stage.info.proportion) return;
   const info = stage.info;
   if (!ann) {
     const ns = 'http://www.w3.org/2000/svg';
@@ -115,7 +122,7 @@ function setFacts(info) {
     return;
   }
   el.factClosed.textContent = info.closed === true ? 'כן' : info.closed === false ? 'לא' : '-';
-  el.factSize.textContent = info.proportion.join(' × ');
+  el.factSize.textContent = info.proportion ? info.proportion.join(' × ') : '-';
   el.factTris.textContent = info.tris.toLocaleString('he-IL');
   el.factSource.textContent = info.source || '-';
 }
@@ -137,7 +144,7 @@ function setDownloads({ urls, local } = {}) {
     a.innerHTML = `${FORMAT_LABEL[k]} <small>${FORMAT_HINT[k]}</small>`;
     el.downloads.appendChild(a);
   }
-  if (local && stage && stage.hasSubject) {
+  if (local && stage && stage.hasSubject && (state.mode !== 'sketch' || (sketch && sketch.state.count))) {
     for (const k of ['glb', 'stl']) {
       const b = document.createElement('button');
       b.type = 'button';
@@ -148,6 +155,7 @@ function setDownloads({ urls, local } = {}) {
       el.downloads.appendChild(b);
     }
   }
+  el.downloadsEmpty.textContent = state.mode === 'sketch' ? 'הקבצים יופיעו כאן אחרי הקו הראשון.' : 'הקבצים יופיעו כאן אחרי ההמרה.';
   el.downloadsEmpty.hidden = el.downloads.querySelectorAll('.btn').length > 0;
 }
 
@@ -157,7 +165,7 @@ async function exportLocal(fmt) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `model.${fmt}`;
+  a.download = `${state.mode === 'sketch' ? 'sketch' : 'model'}.${fmt}`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -204,6 +212,11 @@ function setPhase(phase) {
   el.drop.disabled = busy;
   el.progress.hidden = !(phase === 'uploading' || phase === 'processing' || phase === 'done');
   document.querySelectorAll('input[name="texture"]').forEach((r) => { r.disabled = busy; });
+  if (state.mode === 'sketch' && sketch) {
+    const n = sketch.state.count;
+    el.saveBox.hidden = !n;
+    el.anim.hidden = !(n && state.anim);
+  }
 }
 
 function setProgress(pct, eta) {
@@ -349,6 +362,7 @@ function showProgress() {
   const d = state.anim ? state.anim.duration : 0;
   el.animTime.textContent = `${fmt(play.p * d)} / ${fmt(d)}`;
   el.annotation.classList.toggle('hidden-while-drawing', play.p < 1);
+  if (sketch) sketch.setHelpersHidden(state.mode === 'sketch' && play.p < 1); // the sheet steps aside while the drawing replays
   el.playBtn.textContent = play.on ? 'השהיה' : play.p > 0 && play.p < 1 ? 'המשך' : 'ציור מההתחלה';
 }
 function tick(now) {
@@ -469,12 +483,13 @@ async function saveWork() {
   const menu = document.querySelector('ai-menu');
   if (menu) menu.status = 'נשמר';
 }
-el.saveBtn.addEventListener('click', saveWork);
+el.saveBtn.addEventListener('click', () => (state.mode === 'sketch' ? saveSketch() : saveWork()));
 
 async function openWork(id) {
   let work;
   try { work = await works.getWork(id); } catch { work = null; }
   if (!work) { setStatus('העבודה לא נמצאה בארכיון של הדפדפן הזה.', 'error'); return; }
+  if (work.engine === 'sketch') { location.replace('#/draw/' + encodeURIComponent(work.id)); return; }
   state.drawing = { dataUrl: work.drawing, thumb: work.drawingThumb, name: work.name };
   state.sculpt = null;
   state.workId = work.id;
@@ -641,7 +656,7 @@ let archiveCache = [];
 async function renderArchive() {
   const saved = await works.listWorks().catch(() => []);
   const items = [
-    ...saved.map((w) => ({ kind: 'work', id: w.id, name: w.name, date: w.date, thumb: w.thumb, meta: ENGINE_LABEL[w.engine] || 'פסל' })),
+    ...saved.map((w) => ({ kind: 'work', engine: w.engine, id: w.id, name: w.name, date: w.date, thumb: w.thumb, meta: ENGINE_LABEL[w.engine] || 'פסל' })),
     ...archive.list().map((it) => {
       const st = { SUCCEEDED: 'מוכן', FAILED: 'נכשל', CANCELED: 'בוטל' }[it.status] || 'בתהליך';
       const expired = it.expiresAt && it.expiresAt < Date.now();
@@ -677,7 +692,7 @@ async function renderArchive() {
     row.className = 'row';
     const open = document.createElement('a');
     open.className = 'btn';
-    open.href = (it.kind === 'work' ? '#/work/' : '#/model/') + encodeURIComponent(it.id);
+    open.href = (it.kind === 'task' ? '#/model/' : it.engine === 'sketch' ? '#/draw/' : '#/work/') + encodeURIComponent(it.id);
     open.textContent = 'פתיחה בסטודיו';
     row.appendChild(open);
     if (state.editing) {
@@ -689,6 +704,7 @@ async function renderArchive() {
         if (it.kind === 'work') await works.deleteWork(it.id).catch(() => {});
         else archive.remove(it.id);
         if (state.workId === it.id) { state.workId = null; el.saveBtn.textContent = 'שמירה לארכיון'; }
+        if (state.sketchId === it.id) { state.sketchId = null; if (state.mode === 'sketch') el.saveBtn.textContent = 'שמירה לארכיון'; saveDraft(); }
         renderArchive();
       });
       row.appendChild(del);
@@ -707,7 +723,7 @@ function updateMenu() {
   const apply = () => {
     menu.items = [
       { label: 'מצב עריכה', pressed: state.editing, onSelect: () => { state.editing = !state.editing; renderArchive(); } },
-      { label: 'ניקוי הארכיון', disabled: archiveCache.length === 0, onSelect: async () => { if (confirm('למחוק את כל העבודות מהארכיון בדפדפן הזה?')) { archive.clearAll(); await works.clearWorks().catch(() => {}); state.workId = null; renderArchive(); } } },
+      { label: 'ניקוי הארכיון', disabled: archiveCache.length === 0, onSelect: async () => { if (confirm('למחוק את כל העבודות מהארכיון בדפדפן הזה?')) { archive.clearAll(); await works.clearWorks().catch(() => {}); state.workId = null; state.sketchId = null; saveDraft(); renderArchive(); } } },
     ];
     menu.status = state.editing ? 'מצב עריכה' : '';
   };
@@ -721,17 +737,21 @@ function route() {
   let view = 'studio';
   let modelId = null;
   let workId = null;
+  let nav = null;
+  let sketchId = null;
   if (hash.startsWith('#/archive')) view = 'archive';
+  else if (hash.startsWith('#/draw')) { nav = 'draw'; sketchId = decodeURIComponent(hash.slice(7)) || null; }
   else if (hash.startsWith('#/method')) view = 'method';
   else if (hash.startsWith('#/model/')) modelId = decodeURIComponent(hash.slice(8));
   else if (hash.startsWith('#/work/')) workId = decodeURIComponent(hash.slice(7));
 
   document.querySelectorAll('[data-view]').forEach((s) => { s.hidden = s.dataset.view !== view; });
+  setStudioMode(view === 'studio' && nav === 'draw' ? 'sketch' : 'image');
   document.querySelectorAll('[data-route]').forEach((a) => {
-    if (a.dataset.route === view) a.setAttribute('aria-current', 'page');
+    if (a.dataset.route === (nav || view)) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   });
-  document.title = { studio: 'ציור לתלת-ממד', archive: 'ארכיון | ציור לתלת-ממד', method: 'שיטה | ציור לתלת-ממד' }[view];
+  document.title = nav === 'draw' ? 'ציור במרחב | ציור לתלת-ממד' : { studio: 'ציור לתלת-ממד', archive: 'ארכיון | ציור לתלת-ממד', method: 'שיטה | ציור לתלת-ממד' }[view];
   if (view === 'archive') renderArchive();
   if (modelId && modelId !== state.jobId) {
     state.jobId = modelId;
@@ -739,9 +759,169 @@ function route() {
     openTask(modelId);
   }
   if (workId && workId !== state.workId) openWork(workId);
+  if (sketchId && sketchId !== state.sketchId && state.mode === 'sketch') openSketch(sketchId);
   window.scrollTo({ top: 0 });
 }
 addEventListener('hashchange', route);
+
+/* ---------------- Drawing in 3D ---------------- */
+// The studio has two modes on one stage: a drawing becomes a body (image), or the pen draws
+// straight into space (sketch). The draft of the 3D drawing is saved on every line.
+const DRAFT = 'drawing3d.sketch.draft.v1';
+function readDraft() { try { return JSON.parse(localStorage.getItem(DRAFT)) || null; } catch { return null; } }
+function saveDraft() {
+  if (!sketch || !sketch.active) return true;
+  try {
+    localStorage.setItem(DRAFT, JSON.stringify({ strokes: sketch.data, params: sketch.params, workId: state.sketchId, name: el.workName.value }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function setStudioMode(next) {
+  if (next === 'sketch' && !sketch) next = 'image';
+  const was = state.mode;
+  state.mode = next;
+  document.querySelectorAll('[data-for]').forEach((n) => { n.hidden = n.dataset.for !== next; });
+  el.stage.classList.toggle('sketching', next === 'sketch');
+  if (was === next) return;
+  stopDrawing(true);
+  resetAnnotation();
+  if (next === 'sketch') {
+    const draft = readDraft();
+    state.sketchId = draft && draft.workId ? draft.workId : null;
+    el.workName.value = (draft && draft.name) || 'ציור במרחב';
+    el.saveBtn.textContent = state.sketchId ? 'עדכון בארכיון' : 'שמירה לארכיון';
+    el.spinBtn.setAttribute('aria-pressed', 'false');
+    sketch.enter(draft ? { strokes: readStrokes(draft.strokes), params: draft.params } : {});
+    syncSketchControls();
+    stage.setSpin(false);
+  } else {
+    if (sketch) sketch.leave();
+    el.workName.value = state.drawing ? state.drawing.name : '';
+    el.saveBtn.textContent = state.workId ? 'עדכון בארכיון' : 'שמירה לארכיון';
+    state.anim = null;
+    if (!stage) { /* nothing to show */ } else if (state.phase === 'sculpted' && state.sculpt) renderSculpt(false);
+    else if (state.phase === 'done' && state.jobId) openTask(state.jobId);
+    else showSample();
+    setFacts(stage ? stage.info : null);
+  }
+  setPhase(state.phase);
+}
+
+function syncSketchControls() {
+  const p = sketch.params;
+  document.querySelectorAll('[data-tool]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tool === sketch.tool)));
+  document.querySelectorAll('[data-plane]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.plane === p.plane)));
+  el.skOffset.value = Math.round(p.offset * 100); el.skOffsetVal.textContent = el.skOffset.value;
+  el.skThickness.value = Math.round(p.thickness * 100); el.skThicknessVal.textContent = el.skThickness.value;
+  el.skSnap.checked = p.snap;
+  el.skMirror.checked = p.symmetry;
+}
+
+const PLANE_HINT = { view: 'המשטח עומד מול המבט. מקיפים, והקו הבא נוחת בעומק אחר.', wall: 'מציירים על קיר קבוע. "עומק המשטח" מקרב ומרחיק אותו.', side: 'מציירים על קיר צד. מקיפים מעט כדי לראות אותו.', floor: 'מציירים על הרצפה. "עומק המשטח" מרים אותה לגובה.' };
+function onSketchChange(st) {
+  if (!sketch || !sketch.active) return;
+  state.anim = sketch.animation;
+  play.p = 1;
+  showProgress();
+  el.skUndo.disabled = !st.canUndo;
+  el.skRedo.disabled = !st.canRedo;
+  el.skNew.disabled = !st.count && !state.sketchId;
+  setFacts(stage.info);
+  setDownloads({ local: true });
+  el.caption.innerHTML = `<span>SKETCH / <span dir="ltr">${st.groups}</span> קווים</span><span>${sketch.tool === 'orbit' ? 'גוררים להקפה' : 'גוררים לציור · ימני להקפה'}</span>`;
+  setPhase(state.phase);
+  const kept = saveDraft();
+  if (!kept) setSketchStatus('הטיוטה גדולה מדי לשמירה אוטומטית בדפדפן. שומרים לארכיון כדי לא לאבד אותה.', 'error');
+  else if (!st.count) setSketchStatus(PLANE_HINT[sketch.params.plane]);
+  else setSketchStatus(`${st.groups} קווים · ${st.closed ? 'חוט סגור, מוכן להדפסה' : 'בודקים גוף סגור'} · הטיוטה נשמרת לבד.`, st.closed ? 'ok' : '');
+}
+function setSketchStatus(text, kind = '') {
+  el.skStatus.textContent = text;
+  el.skStatus.className = 'status' + (kind ? ' ' + kind : '');
+}
+
+document.querySelectorAll('[data-tool]').forEach((b) => b.addEventListener('click', () => {
+  sketch.setTool(b.dataset.tool);
+  syncSketchControls();
+  onSketchChange(sketch.state);
+}));
+document.querySelectorAll('[data-plane]').forEach((b) => b.addEventListener('click', () => {
+  sketch.setParams({ plane: b.dataset.plane });
+  syncSketchControls();
+  setSketchStatus(PLANE_HINT[b.dataset.plane]);
+  saveDraft();
+}));
+el.skOffset.addEventListener('input', () => { el.skOffsetVal.textContent = el.skOffset.value; sketch.setParams({ offset: el.skOffset.value / 100 }); saveDraft(); });
+el.skThickness.addEventListener('input', () => { el.skThicknessVal.textContent = el.skThickness.value; sketch.setParams({ thickness: el.skThickness.value / 100 }); });
+el.skSnap.addEventListener('change', () => { sketch.setParams({ snap: el.skSnap.checked }); saveDraft(); });
+el.skMirror.addEventListener('change', () => { sketch.setParams({ symmetry: el.skMirror.checked }); saveDraft(); });
+el.skUndo.addEventListener('click', () => sketch.undo());
+el.skRedo.addEventListener('click', () => sketch.redo());
+el.skNew.addEventListener('click', () => {
+  stopDrawing(true);
+  state.sketchId = null;
+  el.workName.value = 'ציור במרחב';
+  el.saveBtn.textContent = 'שמירה לארכיון';
+  history.replaceState(null, '', '#/draw');
+  sketch.clear(); // still undoable
+  onSketchChange(sketch.state);
+});
+
+async function saveSketch(quiet = false) {
+  if (!sketch || !sketch.state.count) return null;
+  const id = state.sketchId || works.newId();
+  const existing = state.sketchId ? await works.getWork(id).catch(() => null) : null;
+  stopDrawing(true);
+  const work = {
+    id,
+    name: el.workName.value.trim() || 'ציור במרחב',
+    engine: 'sketch',
+    params: sketch.params,
+    strokes: sketch.data,
+    thumb: sketch.withoutHelpers(() => stage.snapshot()),
+    created: existing ? existing.created : new Date().toISOString(),
+    date: new Date().toISOString(),
+  };
+  try {
+    await works.saveWork(work);
+  } catch (err) {
+    console.warn('save failed', err);
+    setSketchStatus('השמירה נכשלה. ייתכן שהדפדפן חוסם אחסון (חלון פרטי) או שהאחסון מלא.', 'error');
+    return null;
+  }
+  if (quiet) return id;
+  state.sketchId = id;
+  el.saveBtn.textContent = 'עדכון בארכיון';
+  history.replaceState(null, '', '#/draw/' + id);
+  saveDraft();
+  setSketchStatus(existing ? 'הציור עודכן בארכיון.' : 'הציור נשמר בארכיון.', 'ok');
+  const menu = document.querySelector('ai-menu');
+  if (menu) menu.status = 'נשמר';
+  return id;
+}
+
+async function openSketch(id) {
+  let work;
+  try { work = await works.getWork(id); } catch { work = null; }
+  if (!work || work.engine !== 'sketch') { setSketchStatus('הציור לא נמצא בארכיון של הדפדפן הזה.', 'error'); return; }
+  // An unsaved draft is never lost: it goes to the archive before another work opens.
+  if (!state.sketchId && sketch.state.count) {
+    const name = el.workName.value;
+    el.workName.value = 'טיוטה ' + new Date().toLocaleString('he-IL', { dateStyle: 'short', timeStyle: 'short' });
+    await saveSketch(true);
+    el.workName.value = name;
+  }
+  stopDrawing(true);
+  state.sketchId = work.id;
+  el.workName.value = work.name;
+  el.saveBtn.textContent = 'עדכון בארכיון';
+  sketch.load(readStrokes(work.strokes), work.params);
+  syncSketchControls();
+  setSketchStatus(`נפתח מהארכיון: ${work.name}. ממשיכים לצייר, והעדכון נשמר ב"עדכון בארכיון".`, 'ok');
+}
 
 /* ---------------- Boot ---------------- */
 function escapeHtml(s) {
