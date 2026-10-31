@@ -3,7 +3,7 @@
 import * as THREE from 'three';
 import { analysePixels, buildSculpt, heightField, isClosed, DEFAULTS } from './sculpt-core.js';
 import { findHorizon, isLandscape, sceneCamera, standingThings } from './scene-core.js';
-import { extractStrokes, liftStrokes, tubeMesh, wrapLoops, depthScale, wireRadius, threadThroughInk, stitchLoops, makeRouter, LINE_DEFAULTS } from './line-core.js';
+import { extractStrokes, liftStrokes, tubeMesh, wrapLoops, depthScale, wireRadius, threadThroughInk, stitchLoops, makeRouter, threadColours, identityMarks, LINE_DEFAULTS } from './line-core.js';
 
 export { DEFAULTS, LINE_DEFAULTS };
 const GRID = 200;      // body analysis resolution (longest side)
@@ -92,13 +92,18 @@ function sceneSculpture(prepared, opts) {
   const paths = lines2d.map((l) => layOnGround(l.map(([x, y]) => { const q = at(x, y); return [q[0], q[1], q[2], weightAt(q[2])]; }), jump));
   const thickness = Math.max(0, Math.min(1, opts.thickness ?? LINE_DEFAULTS.thickness));
   const radius = wireRadius(strokes.lineWidth ?? 3, cam.near / (cam.f * sh), thickness);
-  const tube = tubeMesh(paths, radius, 8);
+  // The thread's colour: seen from the picture's camera, every point falls on its place in the picture.
+  const colourAt = colouredThread(prepared, strokes, opts, ([x, y, z]) => {
+    const d = Math.max(1e-6, -z);
+    return [(cam.aspect / 2 + (x * cam.f) / d) / cam.aspect, cam.vh + ((cam.hc - y) * cam.f) / d];
+  });
+  const tube = tubeMesh(paths, radius, 8, { colorAt: colourAt });
   if (!tube.triangles) throw Object.assign(new Error('no_lines'), { code: 'no_lines' });
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(tube.positions, 3));
   g.setIndex(new THREE.BufferAttribute(tube.indices, 1));
   g.computeVertexNormals();
-  const wire = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0x1a1611, roughness: 0.4, metalness: 0.3 }));
+  const wire = new THREE.Mesh(g, wireMaterial(tube, g));
   wire.name = 'line';
   const group = new THREE.Group();
   group.add(wire);
@@ -166,6 +171,28 @@ function sceneCloud(prepared, cam, at, amount) {
     alpha.push((0.12 + Math.pow(rnd(), 2) * 0.3) * (0.5 + amount));
   }
   return size.length >= 20 ? cloudPoints(pos, tint, size, alpha) : null;
+}
+
+/**
+ * Colour along the thread (Anat, 31.10.2026: "add colours and colour transitions"): the thread
+ * takes the colour of the washes it passes through; over bare paper, and on short very dark
+ * marks (eyes, nostrils, a mouth), it keeps the ink. Off (opts.colour === false): one ink.
+ * toPicture: world point => [u, v] over the picture (0..1).
+ */
+function colouredThread(prepared, strokes, opts, toPicture) {
+  if (opts.colour === false) return null;
+  const { width: w, height: h } = prepared.pixels;
+  if (!strokes.colourMap) strokes.colourMap = threadColours(prepared.pixels, identityMarks(strokes, prepared.strokeImage, w, h));
+  const map = strokes.colourMap;
+  return (q) => { const [u, v] = toPicture(q); return map(u, v); };
+}
+
+function wireMaterial(tube, g) {
+  if (tube.colors) {
+    g.setAttribute('color', new THREE.BufferAttribute(tube.colors, 3));
+    return new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.45, metalness: 0.15 });
+  }
+  return new THREE.MeshStandardMaterial({ color: 0x1a1611, roughness: 0.4, metalness: 0.3 });
 }
 
 /** One thread routed along the ink (cached with the strokes): joins run on drawn lines. */
@@ -265,15 +292,20 @@ export function lineSculpture(prepared, opts) {
   const paths = thread && loops.length
     ? [joinAlongInk(liftStrokes(drawnPaths, prepared.strokeSize, heightAt, toWorld, { ...opts, extra: [] })[0], loops, strokes, prepared.strokeSize, heightAt, k, unit, w0, h0)]
     : liftStrokes(drawnPaths, prepared.strokeSize, heightAt, toWorld, { ...opts, extra: loops });
-  const tube = tubeMesh(paths, radius, 8);
+  // The thread's colour: from the front, a point at (X, Y) sits over its place in the drawing.
+  const colourAt = colouredThread(prepared, strokes, opts, ([X, Y]) => [
+    (X / unit + w0 / 2) / (w0 - 1), (h0 / 2 - Y / unit) / (h0 - 1),
+  ]);
+  const tube = tubeMesh(paths, radius, 8, { colorAt: colourAt });
   if (!tube.triangles) throw Object.assign(new Error('no_lines'), { code: 'no_lines' });
 
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(tube.positions, 3));
   g.setIndex(new THREE.BufferAttribute(tube.indices, 1));
   g.computeVertexNormals();
-  // One line, one colour: the drawing's ink continues into the wrapping without a seam.
-  const wire = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0x1a1611, roughness: 0.4, metalness: 0.3 }));
+  // One line: the drawn line, the joins and the wrapping are one thread, one weight, no seam.
+  // Its colour follows the drawing and passes smoothly from colour to colour (31.10.2026).
+  const wire = new THREE.Mesh(g, wireMaterial(tube, g));
   wire.name = 'line';
 
   const group = new THREE.Group();

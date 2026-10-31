@@ -313,7 +313,7 @@ async function sculptNow() {
 
 function params() {
   return state.engine === 'line'
-    ? { reading: state.reading, depth: el.depth.value / 100, thickness: el.thickness.value / 100, wrap: el.wrap.value / 100, sensitivity: el.sensitivity.value / 100, cloud: el.cloud.value / 100, continuous: el.continuous.checked }
+    ? { reading: state.reading, colour: document.getElementById('colourThread').checked, depth: el.depth.value / 100, thickness: el.thickness.value / 100, wrap: el.wrap.value / 100, sensitivity: el.sensitivity.value / 100, cloud: el.cloud.value / 100, continuous: el.continuous.checked }
     : { volume: el.volume.value / 100, line: el.lineRelief.value / 100 };
 }
 
@@ -324,6 +324,7 @@ function setParams(p = {}) {
   set(el.volume, el.volumeVal, p.volume);
   set(el.lineRelief, el.lineVal, p.line);
   if (typeof p.continuous === 'boolean') el.continuous.checked = p.continuous;
+  document.getElementById('colourThread').checked = p.colour !== false;
   setReading(['auto', 'object', 'scene'].includes(p.reading) ? p.reading : 'auto');
   set(el.wrap, el.wrapVal, p.wrap);
   set(el.sensitivity, el.sensitivityVal, p.sensitivity);
@@ -363,6 +364,7 @@ for (const [input, out] of [[el.volume, el.volumeVal], [el.lineRelief, el.lineVa
   input.addEventListener('input', () => { out.textContent = input.value; liveUpdate(); });
 }
 el.continuous.addEventListener('change', liveUpdate);
+document.getElementById('colourThread').addEventListener('change', liveUpdate);
 
 /* ---------------- Reading: an object, or a landscape laid out in depth ---------------- */
 state.reading = 'auto';

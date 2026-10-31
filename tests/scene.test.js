@@ -57,3 +57,16 @@ test('standing things: a boat stands where it touches the water; the foreground 
   assert.equal(stand.length, 1, 'only the boat stands');
   assert.ok(Math.abs(stand[0].contact - 110 / H) < 0.01, 'it touches the ground at its lowest ink');
 });
+
+test('standing things: a tree at the side runs off the bottom edge and still stands', () => {
+  const W = 200, H = 200, ink = new Uint8Array(W * H);
+  const fill = (x0, x1, y0, y1) => { for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) ink[y * W + x] = 1; };
+  fill(5, 25, 20, 200);     // a trunk from above the horizon down past the bottom edge
+  fill(0, 45, 20, 60);      // its crown
+  fill(120, 200, 186, 200); // the near ground's ink along the bottom edge, apart from the tree
+  const { things } = standingThings(ink, W, H, 0.2, { reach: 1 });
+  const tree = things.find((t) => t.x0 <= 5 && t.y0 <= 20);
+  assert.ok(tree && tree.standing, 'the tree stands');
+  const ground = things.find((t) => t.x0 >= 110);
+  assert.ok(ground && !ground.standing, 'the near ground lies');
+});

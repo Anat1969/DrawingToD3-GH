@@ -220,9 +220,89 @@ function routeOnInk(ink, W, H, a, b) {
   return pts;
 }
 
-// Pixel staircases from the routes are smoothed into the line (Ramer-Douglas-Peucker).
+// Pixel staircases from the routes are smoothed into the line: fewer points
+// (Ramer-Douglas-Peucker), then corners cut (Chaikin), so a route reads as a hand's line.
 function simplifyRoute(path) {
-  return rdp(path, 0.7);
+  return chaikin(rdp(path, 1.1).map((p) => [p[0], p[1], 0]), 1).map((p) => [p[0], p[1]]); // the next stage smooths once more
+}
+
+// Moving average of colours along a path, twice (a soft triangular window): transitions.
+function smoothColours(C, r) {
+  let a = C;
+  for (let pass = 0; pass < 2; pass++) {
+    const n = a.length, out = new Array(n), acc = [0, 0, 0];
+    const pre = [[0, 0, 0]];
+    for (let i = 0; i < n; i++) { acc[0] += a[i][0]; acc[1] += a[i][1]; acc[2] += a[i][2]; pre.push([acc[0], acc[1], acc[2]]); }
+    for (let i = 0; i < n; i++) {
+      const lo = Math.max(0, i - r), hi = Math.min(n, i + r + 1), k = hi - lo;
+      out[i] = [(pre[hi][0] - pre[lo][0]) / k, (pre[hi][1] - pre[lo][1]) / k, (pre[hi][2] - pre[lo][2]) / k];
+    }
+    a = out;
+  }
+  return a;
+}
+
+/**
+ * The colour of a drawing around its lines, for a coloured thread. For each pixel: the mean
+ * colour of the washes nearby (saturated pixels, weighted by saturation), and how much wash
+ * there is. A line over a pink wash takes the pink; a line over bare paper keeps the ink.
+ * Short, very dark strokes (eyes, nostrils, a mouth) keep the ink: they are what the eye
+ * recognises a picture by (Anat, 31.10.2026: colour, and the zebras' eyes).
+ * @param img     RGBA pixels (~200 px)
+ * @param marks   optional Uint8Array mask over img: where the ink stays ink
+ * @returns (u, v) => [r, g, b] in 0..1, u and v in 0..1 over the picture
+ */
+export function threadColours(img, marks = null) {
+  const { width: W, height: H, data } = img;
+  const N = W * H, R = Math.max(2, Math.round(Math.max(W, H) / 45));
+  const sr = new Float32Array(N), sg = new Float32Array(N), sb = new Float32Array(N), sw = new Float32Array(N);
+  for (let p = 0; p < N; p++) {
+    const i = p * 4, r = data[i], g = data[i + 1], b = data[i + 2];
+    const mx = Math.max(r, g, b), sat = mx ? (mx - Math.min(r, g, b)) / mx : 0;
+    const w = sat < 0.22 || mx < 50 ? 0 : sat;
+    sr[p] = r * w; sg[p] = g * w; sb[p] = b * w; sw[p] = w;
+  }
+  const box = (v) => {
+    const I = new Float64Array((W + 1) * (H + 1));
+    for (let y = 0; y < H; y++) { let row = 0; for (let x = 0; x < W; x++) { row += v[y * W + x]; I[(y + 1) * (W + 1) + x + 1] = I[y * (W + 1) + x + 1] + row; } }
+    const out = new Float32Array(N);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const x0 = Math.max(0, x - R), x1 = Math.min(W, x + R + 1), y0 = Math.max(0, y - R), y1 = Math.min(H, y + R + 1);
+      out[y * W + x] = (I[y1 * (W + 1) + x1] - I[y0 * (W + 1) + x1] - I[y1 * (W + 1) + x0] + I[y0 * (W + 1) + x0]) / ((x1 - x0) * (y1 - y0));
+    }
+    return out;
+  };
+  const R2 = box(sr), G2 = box(sg), B2 = box(sb), S2 = box(sw);
+  const INK = [0.1, 0.087, 0.067];
+  return (u, v) => {
+    const x = Math.max(0, Math.min(W - 1, Math.round(u * (W - 1)))), y = Math.max(0, Math.min(H - 1, Math.round(v * (H - 1))));
+    const p = y * W + x;
+    if (marks && marks[p]) return INK;
+    const s = S2[p];
+    if (s < 1e-4) return INK;
+    // The wash colour, a little deeper so it holds as a line on the paper stage.
+    const c = [R2[p] / s / 255 * 0.82, G2[p] / s / 255 * 0.82, B2[p] / s / 255 * 0.82];
+    const k = Math.min(1, s * 2.2); // how much wash is around: paper keeps the ink
+    return [INK[0] + (c[0] - INK[0]) * k, INK[1] + (c[1] - INK[1]) * k, INK[2] + (c[2] - INK[2]) * k];
+  };
+}
+
+/** Where the ink stays ink: short, very dark strokes, drawn into a mask over a w x h grid. */
+export function identityMarks(strokes, img, w, h) {
+  const [SW, SH] = strokes.size || [w, h];
+  const src = img.data, size = Math.max(SW, SH);
+  const m = new Uint8Array(w * h);
+  for (const s of strokes) {
+    if (pathLength(s) > size * 0.09) continue;
+    let lum = 0;
+    for (const [x, y] of s) { const i = (Math.round(y) * SW + Math.round(x)) * 4; lum += 0.299 * src[i] + 0.587 * src[i + 1] + 0.114 * src[i + 2]; }
+    if (lum / s.length > 75) continue;
+    for (const [x, y] of s) {
+      const gx = Math.round((x / (SW - 1)) * (w - 1)), gy = Math.round((y / (SH - 1)) * (h - 1));
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const xx = gx + dx, yy = gy + dy; if (xx >= 0 && yy >= 0 && xx < w && yy < h) m[yy * w + xx] = 1; }
+    }
+  }
+  return m;
 }
 
 class MinHeap {
@@ -596,8 +676,12 @@ function chamfer2(mask, W, H) {
  * @returns {{positions:Float32Array, indices:Uint32Array, weight:Float32Array, triangles:number, length:number}}
  * weight per vertex: 1 on drawn strokes, lower on wrapping and connecting thread.
  */
-export function tubeMesh(paths, radius, radial = 8) {
-  const pos = [], idx = [], wt = [];
+export function tubeMesh(paths, radius, radial = 8, opts = {}) {
+  const pos = [], idx = [], wt = [], col = [];
+  // Colour along the thread (opts.colorAt: point => [r, g, b] in 0..1), smoothed along the
+  // path so it passes from colour to colour without steps: pink hair into orange.
+  const colorAt = opts.colorAt || null;
+  const blend = opts.colorBlend ?? 6;
   // Timeline for drawing the thread: after each segment, how many indices are visible,
   // the time spent so far (drawn line slow like a pen, thread and wrapping faster), and the tip.
   const tlEnd = [], tlTime = [], tlTip = [];
@@ -613,6 +697,10 @@ export function tubeMesh(paths, radius, radial = 8) {
     let N0 = Math.abs(T[0][2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
     N0 = norm(sub(N0, scale(T[0], dot(N0, T[0]))));
     const base = pos.length / 3;
+    let C = null;
+    if (colorAt) {
+      C = smoothColours(P.map((q) => colorAt(q)), blend);
+    }
     let Nv = N0;
     for (let i = 0; i < n; i++) {
       if (i > 0) { Nv = norm(sub(Nv, scale(T[i], dot(Nv, T[i])))); if (!Number.isFinite(Nv[0])) Nv = N0; }
@@ -622,6 +710,7 @@ export function tubeMesh(paths, radius, radial = 8) {
         const a = (j / radial) * Math.PI * 2, c = Math.cos(a) * r, s = Math.sin(a) * r;
         pos.push(P[i][0] + Nv[0] * c + B[0] * s, P[i][1] + Nv[1] * c + B[1] * s, P[i][2] + Nv[2] * c + B[2] * s);
         wt.push(P[i][3] ?? 1);
+        if (C) col.push(C[i][0], C[i][1], C[i][2]);
       }
     }
     const ring = (i, j) => base + i * radial + (j % radial);
@@ -636,6 +725,7 @@ export function tubeMesh(paths, radius, radial = 8) {
     }
     const s0 = pos.length / 3; pos.push(P[0][0], P[0][1], P[0][2]); wt.push(P[0][3] ?? 1);
     const s1 = pos.length / 3; pos.push(P[n - 1][0], P[n - 1][1], P[n - 1][2]); wt.push(P[n - 1][3] ?? 1);
+    if (C) col.push(...C[0], ...C[n - 1]);
     for (let j = 0; j < radial; j++) {
       idx.push(s0, ring(0, j + 1), ring(0, j));
       idx.push(s1, ring(n - 1, j), ring(n - 1, j + 1));
@@ -644,6 +734,7 @@ export function tubeMesh(paths, radius, radial = 8) {
   }
   return {
     positions: new Float32Array(pos), indices: new Uint32Array(idx), weight: new Float32Array(wt),
+    colors: colorAt ? new Float32Array(col) : null,
     triangles: idx.length / 3, length: total,
     timeline: { end: Uint32Array.from(tlEnd), time: Float32Array.from(tlTime), tip: Float32Array.from(tlTip), duration: clock },
   };
