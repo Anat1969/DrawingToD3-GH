@@ -113,13 +113,14 @@ export function standingThings(ink, W, H, horizonRow, opts = {}) {
   for (let s = 0; s < W * H; s++) {
     if (!grown[s] || label[s] >= 0) continue;
     const id = things.length;
-    let x0 = W, x1 = 0, y0 = H, y1 = 0, n = 0, inkLow = 0;
+    let x0 = W, x1 = 0, y0 = H, y1 = 0, n = 0, inkLow = 0, footL = W, footR = -1;
     stack.push(s); label[s] = id;
     while (stack.length) {
       const p = stack.pop(), x = p % W, y = (p / W) | 0;
       n++;
       if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
       if (ink[p] && y > inkLow) inkLow = y;
+      if (y >= H - Math.max(2, Math.round(H * 0.03))) { if (x < footL) footL = x; if (x > footR) footR = x; } // its foot on the bottom edge
       for (const q of [p - 1, p + 1, p - W, p + W]) {
         if (q < 0 || q >= W * H || label[q] >= 0 || !grown[q]) continue;
         if ((q === p - 1 && x === 0) || (q === p + 1 && x === W - 1)) continue;
@@ -129,7 +130,12 @@ export function standingThings(ink, W, H, horizonRow, opts = {}) {
     const h = (y1 - y0) / H, contact = inkLow / H;
     // Stands: a real mass with height, resting on the ground below the horizon. What reaches the
     // bottom edge is the foreground ground itself; small marks (footprints) lie on the ground.
-    const standing = n > W * H * 0.015 && h > 0.06 && contact < 0.97 && contact > horizonRow + 0.02;
+    const resting = n > W * H * 0.015 && h > 0.06 && contact < 0.97 && contact > horizonRow + 0.02;
+    // A tree or a tower at the side of the picture runs off the bottom edge, but its foot there
+    // is narrow; the foreground ground runs along the whole edge (31.10.2026).
+    const foot = footR >= footL ? (footR - footL) / W : 1;
+    const tall = n > W * H * 0.01 && h > 0.35 && y0 / H < horizonRow + 0.1 && foot < 0.22;
+    const standing = resting || tall;
     things.push({ id, x0, x1, y0, y1, contact, standing, size: n });
   }
   return { label, things };

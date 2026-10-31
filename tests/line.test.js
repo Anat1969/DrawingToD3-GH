@@ -209,3 +209,32 @@ test('stitch: the wrap binds the outline like a whip stitch and leaves the insid
   const sd = Math.sqrt(gaps.reduce((a, b) => a + (b - mean) ** 2, 0) / gaps.length);
   assert.ok(sd / mean > 0.12, `stitch length varies like a hand (${(100 * sd / mean).toFixed(0)}%)`);
 });
+
+test('colour: the thread takes the wash it passes through, keeps the ink on paper and on eyes, and passes smoothly', async () => {
+  const { threadColours, tubeMesh: tube } = await import('../src/line-core.js');
+  // Left half pink wash, right half bare paper, and a small dark "eye" inside the pink.
+  const W = 100, H = 60, data = new Uint8ClampedArray(W * H * 4);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = (y * W + x) * 4;
+    const c = x < 50 ? [225, 40, 120] : [248, 246, 240];
+    data.set([...c, 255], i);
+  }
+  const marks = new Uint8Array(W * H);
+  for (let y = 28; y < 32; y++) for (let x = 20; x < 24; x++) marks[y * W + x] = 1;
+  const col = threadColours({ width: W, height: H, data }, marks);
+  const pink = col(0.15, 0.2), paper = col(0.9, 0.5), eye = col(0.22, 0.5);
+  assert.ok(pink[0] > pink[1] + 0.25 && pink[0] > 0.4, `over the wash the thread is pink (${pink.map((v) => v.toFixed(2))})`);
+  assert.ok(Math.max(...paper) < 0.15, 'over bare paper it keeps the ink');
+  assert.ok(Math.max(...eye) < 0.15, 'on an eye it keeps the ink');
+  // Along a thread from the pink into the paper, colour changes in small steps: a transition.
+  const path = Array.from({ length: 101 }, (_, i) => [i / 100, 0.5, 0, 1]);
+  const m = tube([path], 0.01, 6, { colorAt: ([x]) => col(x, 0.2) });
+  assert.ok(m.colors && m.colors.length === m.positions.length, 'one colour per vertex');
+  let maxStep = 0;
+  for (let i = 1; i < 101; i++) {
+    const a = (i - 1) * 6 * 3, b = i * 6 * 3;
+    maxStep = Math.max(maxStep, Math.abs(m.colors[b] - m.colors[a]) + Math.abs(m.colors[b + 1] - m.colors[a + 1]));
+  }
+  assert.ok(maxStep < 0.12, `no hard step in colour along the thread (largest ${maxStep.toFixed(3)})`);
+  assert.ok(m.colors[0] > 0.4 && m.colors[100 * 6 * 3] < 0.15, 'from pink at one end to ink at the other');
+});

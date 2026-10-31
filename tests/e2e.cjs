@@ -341,6 +341,7 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
   const sz = (await page.locator('#factSize').innerText()).split('×').map((v) => Number(v.trim()));
   ok(sz[2] === 100, `the landscape is deepest along the view: ${sz.join(' × ')}`);
   ok(await page.locator('#factClosed').innerText() === 'כן', 'the landscape thread is a closed body too');
+  ok(await page.locator('#colourThread').isChecked(), 'the coloured thread is on by default');
   await page.click('#frontBtn');
   await page.waitForTimeout(700);
   await page.screenshot({ path: path.join(OUT, '11a-scene-front.png') });
