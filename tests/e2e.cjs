@@ -366,6 +366,24 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
   [dl] = await Promise.all([page.waitForEvent('download'), page.click('#imageBtn')]);
   const png = path.join(OUT, dl.suggestedFilename()); await dl.saveAs(png);
   ok(/^anat-[\d-]+\.png$/.test(dl.suggestedFilename()) && fs.statSync(png).size > 100000, `the picture is saved alone, signed (${dl.suggestedFilename()}, ${fs.statSync(png).size} bytes)`);
+  // Her own signature: drawn once on a pad from the logo menu, then on every saved picture
+  await page.evaluate(() => document.querySelector('ai-menu').shadowRoot.querySelector('.logo').click());
+  await page.waitForTimeout(300);
+  await page.evaluate(() => [...document.querySelector('ai-menu').shadowRoot.querySelectorAll('.item')].find((b) => b.textContent.includes('החתימה שלי')).click());
+  await page.waitForSelector('.sign-dialog[open] canvas');
+  ok(await page.locator('.sign-dialog [data-act="save"]').isDisabled(), 'nothing to save before signing');
+  const pad = await page.locator('.sign-pad').boundingBox();
+  const sign = async (pts) => { await page.mouse.move(pad.x + pad.width * pts[0][0], pad.y + pad.height * pts[0][1]); await page.mouse.down(); for (const q of pts.slice(1)) await page.mouse.move(pad.x + pad.width * q[0], pad.y + pad.height * q[1], { steps: 5 }); await page.mouse.up(); };
+  await sign([[0.8, 0.6], [0.72, 0.4], [0.66, 0.65], [0.58, 0.45], [0.5, 0.62], [0.42, 0.4], [0.35, 0.6]]);
+  await sign([[0.3, 0.5], [0.22, 0.62], [0.15, 0.45]]);
+  await page.screenshot({ path: path.join(OUT, '12c-signature-pad.png') });
+  await page.click('.sign-dialog [data-act="save"]');
+  await page.waitForSelector('.sign-dialog', { state: 'detached' });
+  ok(await page.evaluate(() => { const s = JSON.parse(localStorage.getItem('drawing3d.signature.v1')); return s && s.strokes.length === 2 && s.aspect > 1; }), 'the signature is kept as two lines');
+  [dl] = await Promise.all([page.waitForEvent('download'), page.click('#imageBtn')]);
+  const signed = path.join(OUT, 'signed-' + dl.suggestedFilename()); await dl.saveAs(signed);
+  ok(/עם החתימה שלך/.test(await page.locator('#status').innerText()), 'the saved picture carries her own signature');
+
   // The studio fits the window: no page scroll
   await page.setViewportSize({ width: 1600, height: 900 });
   await page.waitForTimeout(500);
