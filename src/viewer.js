@@ -328,6 +328,22 @@ export function createStage(container, { onFrame } = {}) {
     }
   }
 
+  // The work alone at a higher resolution (the DOM overlays are not in the canvas).
+  function renderImage(scale = 2) {
+    const w = container.clientWidth, h = container.clientHeight, pr = renderer.getPixelRatio();
+    renderer.setPixelRatio(scale);
+    renderer.setSize(w, h, false);
+    renderer.render(scene, camera);
+    const out = document.createElement('canvas');
+    out.width = renderer.domElement.width;
+    out.height = renderer.domElement.height;
+    out.getContext('2d').drawImage(renderer.domElement, 0, 0);
+    renderer.setPixelRatio(pr);
+    renderer.setSize(w, h, false);
+    renderer.render(scene, camera);
+    return out;
+  }
+
   // A still of the stage for the archive card. Rendered and read in the same task,
   // so it works without preserveDrawingBuffer.
   function snapshot(side = 480) {
@@ -342,7 +358,7 @@ export function createStage(container, { onFrame } = {}) {
   }
 
   return {
-    setObject, setRaw, refresh, loadUrl, clear, exportFile, snapshot,
+    setObject, setRaw, refresh, loadUrl, clear, exportFile, snapshot, renderImage,
     scene, camera, controls,
     addFrameHook(fn) { hooks.push(fn); },
     setMode: applyMode,

@@ -61,14 +61,12 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
     ok(await page.getAttribute(`[data-mode="${m}"]`, 'aria-pressed') === 'true', `mode ${m} toggles`);
     if (m === 'ink') { ok(await page.locator('#stage.paper').count() === 1, 'ink mode turns stage to paper'); await page.waitForTimeout(400); await page.screenshot({ path: path.join(OUT, '02-ink.png') }); }
   }
-  await page.click('#thirdsBtn');
-  ok(await page.locator('#thirds').isVisible(), 'rule of thirds grid shows');
+  ok(await page.locator('#thirdsBtn').count() === 0, 'no rule-of-thirds button: only relevant tools');
   await page.click('#spinBtn');
   ok(await page.getAttribute('#spinBtn', 'aria-pressed') === 'false', 'spin toggles off');
   await page.locator('#lightAngle').fill('90');
   await page.waitForTimeout(300);
   await page.screenshot({ path: path.join(OUT, '03-tools.png') });
-  await page.click('#thirdsBtn');
 
   // 3. Local export (also makes the GLB used by the mocked conversion)
   let [dl] = await Promise.all([page.waitForEvent('download'), page.click('[data-export="glb"]')]);
@@ -287,10 +285,9 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
   await page.locator('#skThickness').fill('70');
   await page.waitForTimeout(300);
   ok(await page.locator('#factClosed').innerText() === 'כן', 'thicker wire is still closed');
-  // Clay and ink modes work on the drawing too.
-  await page.click('[data-mode="clay"]');
-  await page.waitForTimeout(300);
-  await page.click('[data-mode="source"]');
+  // View modes are for solid bodies: a drawn wire has none.
+  ok(await page.locator('#modeSeg').isHidden(), 'view modes step aside for a drawn wire');
+  if (0) await page.click('[data-mode="clay"]');
   // Replay in the real drawing order
   ok(await page.locator('#anim').isVisible(), 'the drawing can be replayed from the first line');
   await page.locator('#scrub').fill('400');
@@ -350,6 +347,32 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
   await page.waitForFunction(() => document.querySelector('#factSource').textContent === 'פיסול קווי', null, { timeout: 30000 });
   ok(/נקרא כדבר/.test(await page.locator('#readingNote').innerText()), 'it can be read as an object instead');
   await page.click('[data-reading="auto"]');
+  await page.click('#resetBtn');
+
+  // 4e. A photograph: near and far as layers, sharpness against a blurred background (1.11.2026)
+  await page.setInputFiles('#file', path.join(__dirname, 'fixtures', 'photographer.jpg'));
+  await page.waitForSelector('#preview:not([hidden])');
+  await page.click('#convertBtn');
+  const photo = await page.waitForFunction(() => document.querySelector('#factSource').textContent === 'פיסול קווי, צילום', null, { timeout: 30000 }).then(() => true, () => false);
+  ok(photo, 'a shallow-focus photograph is read as near and far' + (photo ? '' : ': ' + await page.locator('#factSource').innerText()));
+  ok(/זוהה צילום/.test(await page.locator('#readingNote').innerText()), 'the note explains the layers');
+  ok(await page.locator('#modeSeg').isHidden(), 'no clay mode for a line sculpture');
+  const pz = (await page.locator('#factSize').innerText()).split('×').map((v) => Number(v.trim()));
+  ok(pz[2] >= 40, `near and far stand apart in depth (${pz.join(' × ')})`);
+  await page.click('#frontBtn');
+  await page.waitForTimeout(600);
+  await page.screenshot({ path: path.join(OUT, '12a-photo-front.png') });
+  // The work alone as a picture, signed
+  [dl] = await Promise.all([page.waitForEvent('download'), page.click('#imageBtn')]);
+  const png = path.join(OUT, dl.suggestedFilename()); await dl.saveAs(png);
+  ok(/^anat-[\d-]+\.png$/.test(dl.suggestedFilename()) && fs.statSync(png).size > 100000, `the picture is saved alone, signed (${dl.suggestedFilename()}, ${fs.statSync(png).size} bytes)`);
+  // The studio fits the window: no page scroll
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await page.waitForTimeout(500);
+  const over = await page.evaluate(() => document.documentElement.scrollHeight - innerHeight);
+  ok(over <= 0, `the studio fits a 1600 x 900 window without scrolling (${over}px)`);
+  await page.screenshot({ path: path.join(OUT, '12b-studio-1600.png') });
+  await page.setViewportSize({ width: 1440, height: 960 });
   await page.click('#resetBtn');
 
   // 5. Unconfigured server message (AI engine)

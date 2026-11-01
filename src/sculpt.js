@@ -1,7 +1,7 @@
 // Browser side of the local engines: reads the drawing once, then builds
 // either the inflated body or the line sculpture with Three.js.
 import * as THREE from 'three';
-import { analysePixels, buildSculpt, heightField, isClosed, DEFAULTS } from './sculpt-core.js';
+import { analysePixels, buildSculpt, heightField, isClosed, focusMap, isLayeredPhoto, foregroundFromFocus, analyseMask, DEFAULTS } from './sculpt-core.js';
 import { findHorizon, isLandscape, sceneCamera, standingThings } from './scene-core.js';
 import { extractStrokes, liftStrokes, tubeMesh, wrapLoops, depthScale, wireRadius, threadThroughInk, stitchLoops, makeRouter, threadColours, identityMarks, LINE_DEFAULTS } from './line-core.js';
 
@@ -31,6 +31,13 @@ function draw(img, side) {
   return c;
 }
 
+// Pixels at the stroke resolution (560 px): sharpness is measured there, because shrinking a
+// photograph further turns the soft edge of a bokeh light into a sharp one.
+function strokeCanvasData(img) {
+  const c = draw(img, STROKES);
+  return c.getContext('2d').getImageData(0, 0, c.width, c.height);
+}
+
 /** Read the drawing once. Slider changes then only rebuild geometry. */
 export async function prepareSculpt(src) {
   const img = await loadImage(src);
@@ -41,12 +48,13 @@ export async function prepareSculpt(src) {
   let analysis = null, analysisError = null;
   try { analysis = analysePixels(pixels); } catch (err) { analysisError = err; }
   const horizon = findHorizon(pixels);
+  const focus = focusMap(strokeCanvasData(img));
   const strokeCanvas = draw(img, STROKES);
   const strokeImage = strokeCanvas.getContext('2d').getImageData(0, 0, strokeCanvas.width, strokeCanvas.height);
   const texture = new THREE.CanvasTexture(draw(img, TEXTURE));
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
-  return { analysis, analysisError, horizon, pixels, strokeImage, strokeCache: new Map(), strokeSize: { sw: strokeCanvas.width, sh: strokeCanvas.height }, texture };
+  return { analysis, analysisError, horizon, focus, pixels, strokeImage, strokeCache: new Map(), strokeSize: { sw: strokeCanvas.width, sh: strokeCanvas.height }, texture };
 }
 
 /** Strokes for a sensitivity, cached: moving other sliders does not re-trace the drawing. */
@@ -54,6 +62,76 @@ function strokesFor(prepared, sensitivity) {
   const key = Math.round((sensitivity ?? LINE_DEFAULTS.sensitivity) * 20);
   if (!prepared.strokeCache.has(key)) prepared.strokeCache.set(key, extractStrokes(prepared.strokeImage, { sensitivity: key / 20 }));
   return prepared.strokeCache.get(key);
+}
+
+/**
+ * A photograph with a shallow focus, read as near and far (Anat, 1.11.2026): what is sharp is
+ * the near layer, a body with its lines and its stitched outline; what is blurred is the far
+ * layer, a wall of soft large puffs at the back, like bokeh. Between them, empty space: near and
+ * far, not a continuous depth. The far wall is larger by the perspective of its distance, so
+ * from the front the photograph is whole again.
+ */
+function photoSculpture(prepared, opts) {
+  const { sw, sh } = prepared.strokeSize;
+  const { width: w, height: h, data } = prepared.pixels;
+  if (!prepared.near) {
+    prepared.near = foregroundFromFocus(prepared.focus.F, sw, sh);
+    const m0 = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) m0[y * w + x] = prepared.near[Math.round((y * (sh - 1)) / (h - 1)) * sw + Math.round((x * (sw - 1)) / (w - 1))];
+    prepared.nearGrid = m0;
+    prepared.nearAnalysis = analyseMask(m0, w, h);
+  }
+  const near = prepared.near;
+  // The near layer's lines: strokes that lie mostly on the sharp subject.
+  const all = strokesFor(prepared, opts.sensitivity);
+  if (!all.near) {
+    const inside = (x, y) => near[Math.round(y) * sw + Math.round(x)] === 1;
+    const s = all.filter((l) => l.filter(([x, y]) => inside(x, y)).length >= l.length * 0.6);
+    s.ink = all.ink.map((v, p) => (v && near[p] ? 1 : 0));
+    s.size = all.size;
+    s.lineWidth = all.lineWidth;
+    all.near = s;
+  }
+  const r = lineSculpture({ ...prepared, analysis: prepared.nearAnalysis }, { ...opts, reading: 'object', strokes: all.near, photo: true });
+  // The far layer: everything blurred, as a wall of bokeh behind the subject.
+  const depth = Math.max(0, Math.min(1, opts.depth ?? LINE_DEFAULTS.depth));
+  const unit = 2 / Math.max(w, h);
+  const D = 0.7 + 1.8 * depth;
+  const grow = 1 + D / 3.2; // from the front, the far wall fills the same frame
+  const pos = [], tint = [], size = [], alpha = [];
+  let seed = 9091;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const F = prepared.focus.F;
+  const amount = opts.cloud === false ? 0.6 : (opts.cloud ?? LINE_DEFAULTS.cloud);
+  const target = Math.round(2500 + 5000 * amount);
+  for (let k = 0; k < 80000 && size.length < target; k++) {
+    const x = rnd() * (w - 1), y = rnd() * (h - 1);
+    // Behind the subject the wall continues: its colour is taken from the background around it
+    // (walking out of the subject in a random direction), so seen from the side the wall is whole.
+    let cx = Math.round(x), cy = Math.round(y), behind = false;
+    if (prepared.nearGrid[cy * w + cx]) {
+      behind = true;
+      const a = rnd() * Math.PI * 2, dx = Math.cos(a), dy = Math.sin(a);
+      let t = 0;
+      while (t < w + h && cx >= 0 && cy >= 0 && cx < w && cy < h && prepared.nearGrid[cy * w + cx]) { t += 1.5; cx = Math.round(x + dx * t); cy = Math.round(y + dy * t); }
+      if (cx < 0 || cy < 0 || cx >= w || cy >= h) continue;
+    }
+    const i = (cy * w + cx) * 4;
+    const sx = Math.round((x * (sw - 1)) / (w - 1)), sy = Math.round((y * (sh - 1)) / (h - 1));
+    const blur = 1 - F[sy * sw + sx];
+    pos.push((x - w / 2) * unit * grow, (h / 2 - y) * unit * grow, -D - rnd() * 0.15);
+    tint.push(data[i] / 255, data[i + 1] / 255, data[i + 2] / 255);
+    size.push((0.035 + 0.11 * blur * rnd()) * grow * (behind ? 1.8 : 1)); // the more blurred, the larger the disc; behind the subject, a softer fill
+    alpha.push(0.22 + 0.3 * rnd());
+  }
+  if (size.length > 20) {
+    const far = cloudPoints(pos, tint, size, alpha);
+    far.name = 'far';
+    r.object.add(far);
+  }
+  let nearShare = 0;
+  for (const v of prepared.nearGrid) nearShare += v;
+  return { ...r, reading: 'photo', nearShare: nearShare / (w * h), focusRatio: prepared.focus.ratio };
 }
 
 /**
@@ -250,12 +328,15 @@ export function sculptMesh(prepared, opts) {
 /** Line sculpture: the ink as one wire in space, colour as transparent smoke. */
 /** How the picture is read: 'object' (inflated and wrapped) or 'scene' (laid out in depth). */
 export function readingOf(prepared, choice = 'auto') {
-  if (choice === 'object' || choice === 'scene') return choice;
+  if (choice === 'object' || choice === 'scene' || choice === 'photo') return choice;
+  if (prepared.focus && isLayeredPhoto(prepared.focus)) return 'photo';
   return isLandscape(prepared.horizon) || !prepared.analysis ? 'scene' : 'object';
 }
 
 export function lineSculpture(prepared, opts) {
-  if (readingOf(prepared, opts.reading) === 'scene') return sceneSculpture(prepared, opts);
+  const reading = readingOf(prepared, opts.reading);
+  if (reading === 'scene') return sceneSculpture(prepared, opts);
+  if (reading === 'photo') return photoSculpture(prepared, opts);
   if (!prepared.analysis) throw prepared.analysisError;
   const a = prepared.analysis;
   const { W, pad, w0, h0 } = a;
@@ -271,7 +352,7 @@ export function lineSculpture(prepared, opts) {
   const heightAt = (u, v) => sample(...gxy(u, v)) * unit;
   const toWorld = (u, v) => [(u * (w0 - 1) - w0 / 2) * unit, (h0 / 2 - v * (h0 - 1)) * unit];
 
-  const strokes = strokesFor(prepared, opts.sensitivity);
+  const strokes = opts.strokes || strokesFor(prepared, opts.sensitivity);
   const thickness = Math.max(0, Math.min(1, opts.thickness ?? LINE_DEFAULTS.thickness));
   // The wire has the drawing's line weight (measured), scaled by the thickness slider.
   const radius = opts.radius ?? wireRadius(strokes.lineWidth ?? 3, 2 / Math.max(prepared.strokeSize.sw, prepared.strokeSize.sh), thickness);
@@ -313,7 +394,7 @@ export function lineSculpture(prepared, opts) {
   const cloud = opts.cloud === true ? 0.6 : opts.cloud === false ? 0 : (opts.cloud ?? LINE_DEFAULTS.cloud);
   let cloudPoints = null;
   if (cloud > 0) {
-    cloudPoints = colourCloud(prepared, sample, unit * k, gxy, toWorld, cloud);
+    cloudPoints = colourCloud(prepared, sample, unit * k, gxy, toWorld, cloud, opts.photo ? isPainted : isWash);
     if (cloudPoints) group.add(cloudPoints);
   }
   return {
@@ -396,6 +477,12 @@ function chamfer2(m, w, h) {
   return d;
 }
 
+// In a photograph every pixel is the picture: only bare white is left out.
+function isPainted(d, i) {
+  const mx = Math.max(d[i], d[i + 1], d[i + 2]);
+  return !(mx > 240 && mx - Math.min(d[i], d[i + 1], d[i + 2]) < 12);
+}
+
 // A wash is clearly coloured: relative saturation, so skin, paper and pencil grey stay clear
 // (a skin tone is about 0.28, the pink and orange washes 0.8 and more).
 function isWash(d, i) {
@@ -405,7 +492,7 @@ function isWash(d, i) {
 
 // Colour as sprayed pigment in the air: soft round puffs of different sizes and transparencies,
 // coloured by the local average of the wash, spread through the depth of the body.
-function colourCloud(prepared, sample, zScale, gxy, toWorld, amount) {
+function colourCloud(prepared, sample, zScale, gxy, toWorld, amount, isWash) {
   const { width: w, height: hh, data } = prepared.pixels;
   // Local average colour (5x5) of the coloured pixels: a wash, not a speckle.
   const avg = (x, y) => {
@@ -436,7 +523,7 @@ function colourCloud(prepared, sample, zScale, gxy, toWorld, amount) {
   for (let k = 0; k < 120000 && size.length < target; k++) {
     const x = Math.floor(rnd() * w), y = Math.floor(rnd() * hh), i = (y * w + x) * 4;
     const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-    if (!isWash(data, i) || lum < 55) continue;
+    if (!isWash(data, i) || (lum < 55 && isWash !== isPainted)) continue;
     const u = x / (w - 1), v = y / (hh - 1);
     const depth = sample(...gxy(u, v)) * zScale;
     if (!(depth > 0)) continue;

@@ -51,13 +51,16 @@ export function findHorizon(img) {
     for (let yy = top; yy < bot; yy++) for (let x = 0; x < W; x++) { const i = (yy * W + x) * 4; calm += Math.hypot(data[i] - mr, data[i + 1] - mg, data[i + 2] - mb); }
     calm /= n;
     const score = agree - calm / 60;
-    if (score > best.score) best = { row: y / H, score, agree, calm };
+    // Sky above: blue leads in the band above (a cloudy sky is still blue-grey; red hair, warm
+    // paper or a white page are not).
+    const skyLike = mb >= mr + 4 && mb >= mg - 6;
+    if (score > best.score) best = { row: y / H, score, agree, calm, skyLike };
   }
   return best;
 }
 
 /** A landscape when the horizon is straight across the picture and the sky above it is calm. */
-export const isLandscape = (h) => h.score > 0.6;
+export const isLandscape = (h) => h.score > 0.6 || (h.skyLike && h.agree > 0.8 && h.calm < 45); // a cloudy sky over a straight horizon (a desert photograph)
 
 /**
  * The camera of the picture. Picture coordinates: u across (0..aspect), v down (0..1), both in
