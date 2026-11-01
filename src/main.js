@@ -7,6 +7,7 @@ import * as archive from './history.js';
 import { prepareSculpt, sculptMesh, lineSculpture } from './sculpt.js';
 import * as works from './store.js';
 import { createSketch } from './sketch.js';
+import { loadSignature, drawSignature, openSignaturePad } from './signature.js';
 import { deserialize as readStrokes } from './sketch-core.js';
 
 const POLL_MS = 3000;
@@ -180,17 +181,25 @@ async function saveImage() {
   const shot = () => stage.renderImage(2);
   const canvas = cropToWork(state.mode === 'sketch' && sketch ? sketch.withoutHelpers(shot) : shot());
   const ctx = canvas.getContext('2d');
-  const px = Math.max(18, Math.round(canvas.height * 0.034));
-  try { await document.fonts.load(`${px}px "Gveret Levin"`, 'ענת שטיבלמן'); } catch { /* falls back to cursive */ }
-  ctx.save();
-  ctx.font = `${px}px "Gveret Levin", cursive`;
-  ctx.fillStyle = '#111';
-  ctx.direction = 'rtl';
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'alphabetic';
   const m = Math.round(canvas.height * 0.03);
-  ctx.fillText('ענת שטיבלמן', m, canvas.height - m);
-  ctx.restore();
+  const own = loadSignature();
+  if (own) {
+    // Her own hand, as lines: sharp at any size. Small, black, bottom left.
+    // Small: at most 4.5% of the height and 18% of the width, whichever is smaller.
+    const sh = Math.max(14, Math.min(canvas.height * 0.045, (canvas.width * 0.18) / Math.max(0.5, own.aspect)));
+    drawSignature(ctx, own, m, canvas.height - m, Math.round(sh));
+  } else {
+    const px = Math.max(18, Math.round(canvas.height * 0.034));
+    try { await document.fonts.load(`${px}px "Gveret Levin"`, 'ענת שטיבלמן'); } catch { /* falls back to cursive */ }
+    ctx.save();
+    ctx.font = `${px}px "Gveret Levin", cursive`;
+    ctx.fillStyle = '#111';
+    ctx.direction = 'rtl';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText('ענת שטיבלמן', m, canvas.height - m);
+    ctx.restore();
+  }
   const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -201,6 +210,15 @@ async function saveImage() {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
+  const msg = own ? 'התמונה נשמרה, עם החתימה שלך.' : 'התמונה נשמרה, חתומה בגופן. לחתימה בכתב ידך: תפריט הלוגו, "החתימה שלי".';
+  if (state.mode === 'sketch') setSketchStatus(msg, 'ok'); else setStatus(msg, 'ok');
+}
+
+async function signNow() {
+  const r = await openSignaturePad();
+  const msg = r === undefined ? '' : r ? 'החתימה נשמרה. היא תופיע בכל תמונה שתישמר.' : 'חזרה לחתימה בגופן.';
+  if (msg) { if (state.mode === 'sketch') setSketchStatus(msg, 'ok'); else setStatus(msg, 'ok'); }
+  updateMenu();
 }
 
 // The frame around the work: everything that differs from the ground colour (taken in the
@@ -828,6 +846,7 @@ function updateMenu() {
   if (!menu) return;
   const apply = () => {
     menu.items = [
+      { label: loadSignature() ? 'החתימה שלי: חתימה מחדש' : 'החתימה שלי', onSelect: signNow },
       { label: 'מצב עריכה', pressed: state.editing, onSelect: () => { state.editing = !state.editing; renderArchive(); } },
       { label: 'ניקוי הארכיון', disabled: archiveCache.length === 0, onSelect: async () => { if (confirm('למחוק את כל העבודות מהארכיון בדפדפן הזה?')) { archive.clearAll(); await works.clearWorks().catch(() => {}); state.workId = null; state.sketchId = null; saveDraft(); renderArchive(); } } },
     ];

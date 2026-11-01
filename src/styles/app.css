@@ -423,3 +423,15 @@ input[type="range"] { accent-color: var(--window); width: 120px; }
   .name-field > span { display: none; }
   .save { align-items: center; }
 }
+
+/* Signature pad: a strip of paper in the dark room, signed once. */
+.sign-dialog {
+  width: min(680px, calc(100vw - 32px)); padding: 20px; border: 0; color: var(--paper);
+  background: linear-gradient(180deg, #1c1915, #14120f); box-shadow: 0 40px 90px -30px rgba(0, 0, 0, 0.9);
+}
+.sign-dialog::backdrop { background: rgba(12, 11, 9, 0.72); }
+.sign-dialog h2 { margin: 0 0 6px; font-size: 15px; font-weight: 300; color: var(--muted); }
+.sign-dialog h2 b { color: var(--paper); font-weight: 600; }
+.sign-dialog .hint { margin: 0 0 12px; }
+.sign-pad { display: block; width: 100%; aspect-ratio: 3 / 1; background: #ece6da; touch-action: none; cursor: crosshair; }
+.sign-dialog .actions { margin-top: 12px; }
