@@ -11,7 +11,7 @@
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Hebrew:wght@200;300;400;600&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gveret+Levin&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Hebrew:wght@200;300;400;600&display=swap">
   <script src="https://appofapp-gh.vercel.app/ai-menu.js" defer></script>
 </head>
 <body>
@@ -57,22 +57,20 @@
         <section class="stage-wrap" aria-labelledby="stage-title">
           <h2 id="stage-title" class="sr-only">במה: צפייה במודל</h2>
           <div class="stage" id="stage">
-            <div class="thirds" id="thirds" hidden aria-hidden="true"><i></i><i></i><i></i><i></i></div>
             <svg class="annotation" id="annotation" aria-hidden="true"></svg>
             <div class="stage-note" id="stageNote" role="status" aria-live="polite"></div>
             <div class="stage-caption" id="stageCaption"></div>
           </div>
           <div class="stage-tools" role="toolbar" aria-label="כלי תצוגה">
-            <div class="seg" role="group" aria-label="מצב תצוגה">
+            <div class="seg" id="modeSeg" role="group" aria-label="מצב תצוגה">
               <button type="button" data-mode="source" aria-pressed="true">מקור</button>
               <button type="button" data-mode="clay" aria-pressed="false">חימר</button>
               <button type="button" data-mode="ink" aria-pressed="false">קו</button>
             </div>
             <label class="light-ctl">
-              <span><b>אור:</b> כיוון</span>
+              <span title="כיוון"><b>אור:</b><small> כיוון</small></span>
               <input type="range" id="lightAngle" min="0" max="360" value="300" step="1" aria-label="כיוון אור החלון">
             </label>
-            <button type="button" class="toggle" id="thirdsBtn" aria-pressed="false">רשת שלישים</button>
             <button type="button" class="toggle" id="spinBtn" aria-pressed="true">סיבוב</button>
             <button type="button" class="toggle" id="frontBtn">חזית</button>
           </div>
@@ -107,12 +105,12 @@
             </div>
             <div class="sk-sculpt">
               <label class="slider">
-                <span><b>עומק:</b> כמה הגוף יוצא מהדף</span>
+                <span title="כמה הגוף יוצא מהדף"><b>עומק:</b><small> כמה הגוף יוצא מהדף</small></span>
                 <input type="range" id="skDepth" min="0" max="100" value="50">
                 <output id="skDepthVal" dir="ltr">50</output>
               </label>
               <label class="slider">
-                <span><b>ליפוף:</b> החוט מתלפף סביב הנפח</span>
+                <span title="החוט מתלפף סביב הנפח"><b>ליפוף:</b><small> החוט מתלפף סביב הנפח</small></span>
                 <input type="range" id="skWrap" min="0" max="100" value="45">
                 <output id="skWrapVal" dir="ltr">45</output>
               </label>
@@ -127,17 +125,17 @@
               </div>
             </div>
             <label class="slider sk-line">
-              <span><b>עומק המשטח:</b> קדימה ואחורה</span>
+              <span title="קדימה ואחורה"><b>עומק המשטח:</b><small> קדימה ואחורה</small></span>
               <input type="range" id="skOffset" min="-100" max="100" value="0">
               <output id="skOffsetVal" dir="ltr">0</output>
             </label>
             <label class="slider">
-              <span><b>עובי:</b> עובי החוט</span>
+              <span title="עובי החוט"><b>עובי:</b><small> עובי החוט</small></span>
               <input type="range" id="skThickness" min="0" max="100" value="35">
               <output id="skThicknessVal" dir="ltr">35</output>
             </label>
-            <label class="check"><input type="checkbox" id="skSnap" checked> <span><b>המשך מקו קיים</b> לחיצה ליד קו מתחילה ממנו, והמשטח עובר דרכו</span></label>
-            <label class="check"><input type="checkbox" id="skMirror"> <span><b>סימטריה</b> כל קו מצויר גם בצד השני</span></label>
+            <label class="check"><input type="checkbox" id="skSnap" checked> <span title="לחיצה ליד קו מתחילה ממנו, והמשטח עובר דרכו"><b>המשך מקו קיים</b><small> לחיצה ליד קו מתחילה ממנו, והמשטח עובר דרכו</small></span></label>
+            <label class="check"><input type="checkbox" id="skMirror"> <span title="כל קו מצויר גם בצד השני"><b>סימטריה</b><small> כל קו מצויר גם בצד השני</small></span></label>
             <div class="actions">
               <button class="btn" id="skUndo" type="button" disabled>ביטול</button>
               <button class="btn" id="skRedo" type="button" disabled>חזרה</button>
@@ -167,10 +165,11 @@
 
             <fieldset class="option engine">
               <legend class="legend"><b>מנוע:</b> איך הציור יהפוך לגוף</legend>
-              <label><input type="radio" name="engine" value="line" checked> <span><b>קו במרחב</b> הקו השחור כחוט רציף שמתלפף סביב הנפח, והצבע כענן. חינם, במכשיר.</span></label>
-              <label><input type="radio" name="engine" value="local"> <span><b>גוף מנופח</b> הצורה כגוף מעוגל וסגור. חינם, במכשיר.</span></label>
-              <label><input type="radio" name="engine" value="ai"> <span><b>בינה מלאכותית</b> Meshy משלים גם את הצד האחורי. דורש מפתח בתשלום.</span></label>
+              <label><input type="radio" name="engine" value="line" checked> <span><b>קו במרחב</b><small> הקו כחוט רציף שמתלפף סביב הנפח, והצבע כענן. חינם, במכשיר.</small></span></label>
+              <label><input type="radio" name="engine" value="local"> <span><b>גוף מנופח</b><small> הצורה כגוף מעוגל וסגור. חינם, במכשיר.</small></span></label>
+              <label><input type="radio" name="engine" value="ai"> <span><b>בינה מלאכותית</b><small> Meshy משלים גם את הצד האחורי. דורש מפתח בתשלום.</small></span></label>
             </fieldset>
+            <p class="hint engine-note" id="engineNote"></p>
 
             <div class="engine-panel" data-engine-panel="line">
               <div class="sk-row">
@@ -179,46 +178,47 @@
                   <button type="button" data-reading="auto" aria-pressed="true">אוטומטי</button>
                   <button type="button" data-reading="object" aria-pressed="false">דבר</button>
                   <button type="button" data-reading="scene" aria-pressed="false">נוף</button>
+                  <button type="button" data-reading="photo" aria-pressed="false">צילום</button>
                 </div>
                 <p class="hint reading-note" id="readingNote"></p>
               </div>
               <label class="slider">
-                <span><b>עומק:</b> כמה הקו יוצא מהדף</span>
+                <span title="כמה הקו יוצא מהדף"><b>עומק:</b><small> כמה הקו יוצא מהדף</small></span>
                 <input type="range" id="depth" min="0" max="100" value="50">
                 <output id="depthVal" dir="ltr">50</output>
               </label>
               <label class="slider">
-                <span><b>עובי:</b> עובי החוט</span>
+                <span title="עובי החוט"><b>עובי:</b><small> עובי החוט</small></span>
                 <input type="range" id="thickness" min="0" max="100" value="35">
                 <output id="thicknessVal" dir="ltr">35</output>
               </label>
               <label class="slider">
-                <span><b>ליפוף:</b> החוט מתלפף סביב הנפח</span>
+                <span title="החוט מתלפף סביב הנפח"><b>ליפוף:</b><small> החוט מתלפף סביב הנפח</small></span>
                 <input type="range" id="wrap" min="0" max="100" value="35">
                 <output id="wrapVal" dir="ltr">35</output>
               </label>
               <label class="slider">
-                <span><b>רגישות לקו:</b> גם קווים דקים וקצרים</span>
+                <span title="גם קווים דקים וקצרים"><b>רגישות לקו:</b><small> גם קווים דקים וקצרים</small></span>
                 <input type="range" id="sensitivity" min="0" max="100" value="60">
                 <output id="sensitivityVal" dir="ltr">60</output>
               </label>
               <label class="slider">
-                <span><b>ענן צבע:</b> כתמי הצבע כריסוס שקוף</span>
+                <span title="כתמי הצבע כריסוס שקוף"><b>ענן צבע:</b><small> כתמי הצבע כריסוס שקוף</small></span>
                 <input type="range" id="cloud" min="0" max="100" value="60">
                 <output id="cloudVal" dir="ltr">60</output>
               </label>
-              <label class="check"><input type="checkbox" id="colourThread" checked> <span><b>חוט צבעוני</b> החוט מקבל את צבעי הציור, במעברים רכים</span></label>
-              <label class="check"><input type="checkbox" id="continuous" checked> <span><b>חוט אחד</b> הקווים והליפוף מתחברים לחוט רציף</span></label>
+              <label class="check"><input type="checkbox" id="colourThread" checked> <span title="החוט מקבל את צבעי הציור, במעברים רכים"><b>חוט צבעוני</b><small> החוט מקבל את צבעי הציור, במעברים רכים</small></span></label>
+              <label class="check"><input type="checkbox" id="continuous" checked> <span title="הקווים והליפוף מתחברים לחוט רציף"><b>חוט אחד</b><small> הקווים והליפוף מתחברים לחוט רציף</small></span></label>
             </div>
 
             <div class="engine-panel" data-engine-panel="local" hidden>
               <label class="slider">
-                <span><b>נפח:</b> עובי הגוף</span>
+                <span title="עובי הגוף"><b>נפח:</b><small> עובי הגוף</small></span>
                 <input type="range" id="volume" min="0" max="100" value="50" aria-describedby="volumeVal">
                 <output id="volumeVal" dir="ltr">50</output>
               </label>
               <label class="slider">
-                <span><b>קו:</b> בליטת הקו השחור</span>
+                <span title="בליטת הקו השחור"><b>קו:</b><small> בליטת הקו השחור</small></span>
                 <input type="range" id="lineRelief" min="0" max="100" value="50" aria-describedby="lineVal">
                 <output id="lineVal" dir="ltr">50</output>
               </label>
@@ -227,8 +227,8 @@
             <div class="engine-panel" data-engine-panel="ai" hidden>
               <fieldset class="option">
                 <legend class="sr-only">סוג המודל</legend>
-                <label><input type="radio" name="texture" value="1" checked> <span><b>צבע ומרקם</b> המודל עם צבעי הציור</span></label>
-                <label><input type="radio" name="texture" value="0"> <span><b>צורה בלבד</b> גוף נקי, מהיר יותר</span></label>
+                <label><input type="radio" name="texture" value="1" checked> <span title="המודל עם צבעי הציור"><b>צבע ומרקם</b><small> המודל עם צבעי הציור</small></span></label>
+                <label><input type="radio" name="texture" value="0"> <span title="גוף נקי, מהיר יותר"><b>צורה בלבד</b><small> גוף נקי, מהיר יותר</small></span></label>
               </fieldset>
               <p class="service" id="service" data-state="checking" role="status" aria-live="polite">
                 <b>שירות ההמרה:</b> <span id="serviceText">בודקים חיבור...</span>

@@ -12,8 +12,8 @@ import { deserialize as readStrokes } from './sketch-core.js';
 const POLL_MS = 3000;
 const $ = (id) => document.getElementById(id);
 const el = {
-  stage: $('stage'), note: $('stageNote'), caption: $('stageCaption'), annotation: $('annotation'), thirds: $('thirds'),
-  thirdsBtn: $('thirdsBtn'), spinBtn: $('spinBtn'), lightAngle: $('lightAngle'),
+  stage: $('stage'), note: $('stageNote'), caption: $('stageCaption'), annotation: $('annotation'),
+  spinBtn: $('spinBtn'), lightAngle: $('lightAngle'),
   drop: $('drop'), dropEmpty: $('dropEmpty'), file: $('file'), preview: $('preview'),
   convert: $('convertBtn'), sample: $('sampleBtn'), reset: $('resetBtn'),
   progress: $('progress'), progressBar: $('progressBar'), progressPct: $('progressPct'), progressEta: $('progressEta'),
@@ -74,6 +74,7 @@ function showSample() {
 let ann = null;
 function annText(info) {
   const [x, y, z] = info.proportion;
+  if (info.reading === 'photo') return `<b>צילום:</b> קרוב <span dir="ltr">${Math.round(info.nearShare * 100)}%</span> · רחוק כרקע<br><b>קווים:</b> <span dir="ltr">${info.lines}</span>${info.continuous ? ' · חוט אחד' : ''}`;
   if (info.reading === 'scene') return `<b>נוף:</b> אופק ב-<span dir="ltr">${Math.round(info.horizon * 100)}%</span> מהגובה · <b>עומדים:</b> <span dir="ltr">${info.standing}</span><br><b>קווים:</b> <span dir="ltr">${info.lines}</span>${info.continuous ? ' · חוט אחד' : ''}`;
   if (info.lines) return `<b>קווים:</b> <span dir="ltr">${info.lines}</span> · <b>ליפופים:</b> <span dir="ltr">${info.loops || 0}</span>${info.continuous ? ' · חוט אחד' : ''}<br><b>פרופורציה:</b> <span dir="ltr">${x} × ${y} × ${z}</span>`;
   return `<b>פרופורציה:</b> <span dir="ltr">${x} × ${y} × ${z}</span><br><b>משולשים:</b> <span dir="ltr">${info.tris.toLocaleString('he-IL')}</span>`;
@@ -146,6 +147,15 @@ function setDownloads({ urls, local } = {}) {
     a.innerHTML = `${FORMAT_LABEL[k]} <small>${FORMAT_HINT[k]}</small>`;
     el.downloads.appendChild(a);
   }
+  if (stage && stage.hasSubject && (state.mode !== 'sketch' || (sketch && sketch.state.count))) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn';
+    b.id = 'imageBtn';
+    b.innerHTML = 'שמירת תמונה <small>עם חתימה</small>';
+    b.addEventListener('click', saveImage);
+    el.downloads.appendChild(b);
+  }
   if (local && stage && stage.hasSubject && (state.mode !== 'sketch' || (sketch && sketch.state.count))) {
     for (const k of ['glb', 'stl']) {
       const b = document.createElement('button');
@@ -159,6 +169,63 @@ function setDownloads({ urls, local } = {}) {
   }
   el.downloadsEmpty.textContent = state.mode === 'sketch' ? 'הקבצים יופיעו כאן אחרי הקו הראשון.' : 'הקבצים יופיעו כאן אחרי ההמרה.';
   el.downloadsEmpty.hidden = el.downloads.querySelectorAll('.btn').length > 0;
+}
+
+// The work alone, as a picture: no annotation, caption or tools, only the stage render at twice
+// the resolution, signed small and black at the bottom left in a round, joined hand
+// (Gveret Levin). Anat, 1.11.2026.
+async function saveImage() {
+  if (!stage || !stage.hasSubject) return;
+  stopDrawing(true);
+  const shot = () => stage.renderImage(2);
+  const canvas = cropToWork(state.mode === 'sketch' && sketch ? sketch.withoutHelpers(shot) : shot());
+  const ctx = canvas.getContext('2d');
+  const px = Math.max(18, Math.round(canvas.height * 0.034));
+  try { await document.fonts.load(`${px}px "Gveret Levin"`, 'ענת שטיבלמן'); } catch { /* falls back to cursive */ }
+  ctx.save();
+  ctx.font = `${px}px "Gveret Levin", cursive`;
+  ctx.fillStyle = '#111';
+  ctx.direction = 'rtl';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  const m = Math.round(canvas.height * 0.03);
+  ctx.fillText('ענת שטיבלמן', m, canvas.height - m);
+  ctx.restore();
+  const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const d = new Date(), z = (n) => String(n).padStart(2, '0');
+  a.href = url;
+  a.download = `anat-${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}.png`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+// The frame around the work: everything that differs from the ground colour (taken in the
+// corners), with a margin. The work fills the picture instead of floating in an empty stage.
+function cropToWork(src) {
+  const w = src.width, h = src.height;
+  const d = src.getContext('2d').getImageData(0, 0, w, h).data;
+  const bg = [d[0], d[1], d[2]];
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = 0; y < h; y += 2) for (let x = 0; x < w; x += 2) {
+    const i = (y * w + x) * 4;
+    const mx = Math.max(d[i], d[i + 1], d[i + 2]), mn = Math.min(d[i], d[i + 1], d[i + 2]);
+    const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    // The work: dark lines or colour. Its shadow on the floor is a light neutral grey.
+    if ((lum < 150 || (mx - mn) > 0.22 * mx) && Math.abs(d[i] - bg[0]) + Math.abs(d[i + 1] - bg[1]) + Math.abs(d[i + 2] - bg[2]) > 40) {
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+  }
+  if (x1 < 0) return src;
+  const m = Math.round(Math.max(x1 - x0, y1 - y0) * 0.1);
+  x0 = Math.max(0, x0 - m); y0 = Math.max(0, y0 - m); x1 = Math.min(w, x1 + m); y1 = Math.min(h, y1 + m * 1.6); // room for the signature
+  const out = document.createElement('canvas');
+  out.width = x1 - x0; out.height = y1 - y0;
+  out.getContext('2d').drawImage(src, x0, y0, out.width, out.height, 0, 0, out.width, out.height);
+  return out;
 }
 
 async function exportLocal(fmt) {
@@ -181,11 +248,15 @@ document.querySelectorAll('[data-mode]').forEach((b) => {
     stage && stage.setMode(b.dataset.mode);
   });
 });
-el.thirdsBtn.addEventListener('click', () => {
-  const on = el.thirdsBtn.getAttribute('aria-pressed') !== 'true';
-  el.thirdsBtn.setAttribute('aria-pressed', String(on));
-  el.thirds.hidden = !on;
-});
+// View modes (source, clay, line) only mean something for a solid body: the sample, an inflated
+// body, a model from Meshy or a file. A line sculpture is already a line: the modes step aside.
+function syncTools() {
+  const info = stage && stage.info;
+  const solid = !!info && state.mode !== 'sketch' && !String(info.source || '').startsWith('פיסול קווי');
+  const seg = document.getElementById('modeSeg');
+  if (seg && seg.hidden === solid) seg.hidden = !solid;
+}
+setInterval(syncTools, 400);
 el.spinBtn.addEventListener('click', () => {
   const on = el.spinBtn.getAttribute('aria-pressed') !== 'true';
   el.spinBtn.setAttribute('aria-pressed', String(on));
@@ -325,7 +396,7 @@ function setParams(p = {}) {
   set(el.lineRelief, el.lineVal, p.line);
   if (typeof p.continuous === 'boolean') el.continuous.checked = p.continuous;
   document.getElementById('colourThread').checked = p.colour !== false;
-  setReading(['auto', 'object', 'scene'].includes(p.reading) ? p.reading : 'auto');
+  setReading(['auto', 'object', 'scene', 'photo'].includes(p.reading) ? p.reading : 'auto');
   set(el.wrap, el.wrapVal, p.wrap);
   set(el.sensitivity, el.sensitivityVal, p.sensitivity);
   set(el.cloud, el.cloudVal, typeof p.smoke === 'boolean' ? (p.smoke ? 0.6 : 0) : p.cloud); // works saved before the cloud slider
@@ -340,7 +411,7 @@ function renderSculpt(keepView) {
     state.anim = r.animation;
     play.p = 1;
     showProgress();
-    info = stage.setObject(r.object, { source: r.reading === 'scene' ? 'פיסול קווי, נוף' : 'פיסול קווי', closed: r.closed, lines: r.lines, loops: r.loops, continuous: r.continuous, reading: r.reading, horizon: r.horizon, standing: r.standing, viewpoint: r.viewpoint }, { keepView });
+    info = stage.setObject(r.object, { source: r.reading === 'scene' ? 'פיסול קווי, נוף' : r.reading === 'photo' ? 'פיסול קווי, צילום' : 'פיסול קווי', nearShare: r.nearShare, closed: r.closed, lines: r.lines, loops: r.loops, continuous: r.continuous, reading: r.reading, horizon: r.horizon, standing: r.standing, viewpoint: r.viewpoint }, { keepView });
     showReading(r);
   } else {
     stopDrawing(true);
@@ -379,7 +450,9 @@ document.querySelectorAll('[data-reading]').forEach((b) => b.addEventListener('c
 function showReading(r) {
   const note = document.getElementById('readingNote');
   const auto = state.reading === 'auto';
-  note.textContent = r.reading === 'scene'
+  note.textContent = r.reading === 'photo'
+    ? `${auto ? 'זוהה צילום' : 'נקרא כצילום'}: מה שבפוקוס (${Math.round(r.nearShare * 100)}% מהתמונה) הוא השכבה הקרובה, עם קווים ונפח. מה שמטושטש עומד מאחור כקיר של כתמי אור רכים. "חזית" מחזירה את התמונה השלמה.`
+    : r.reading === 'scene'
     ? `${auto ? 'זוהה נוף' : 'נקרא כנוף'}: קו אופק ב-${Math.round(r.horizon * 100)}% מהגובה. הקרקע נפרשת לעומק, השמיים עומדים מאחור, ו${r.standing ? 'הדבר העומד' : 'כל מה שבתמונה'} ${r.standing ? 'עומד במקום שבו הוא נוגע בקרקע' : 'שוכב על הקרקע'}. "חזית" מחזירה למבט של הציור.`
     : `${auto ? 'זוהה דבר' : 'נקרא כדבר'}: הגוף מנופח אל המתבונן, והחוט עוטף את המתאר.`;
 }
@@ -538,6 +611,9 @@ function setEngine(next) {
   try { localStorage.setItem('drawing3d.engine.v2', next); } catch { /* ignore */ }
   document.querySelectorAll('input[name="engine"]').forEach((r) => { r.checked = r.value === next; });
   document.querySelectorAll('[data-engine-panel]').forEach((p) => { p.hidden = p.dataset.enginePanel !== next; });
+  const chosen = document.querySelector(`input[name="engine"][value="${next}"]`);
+  const note = document.getElementById('engineNote');
+  if (note && chosen) note.textContent = chosen.closest('label').querySelector('small').textContent.trim();
   setPhase(state.phase);
   if (state.phase === 'ready') setStatus(readyText());
   // Switching between the two local engines re-sculpts the same drawing at once.
@@ -968,6 +1044,14 @@ async function openSketch(id) {
   syncSketchControls();
   setSketchStatus(`נפתח מהארכיון: ${work.name}. ממשיכים לצייר, והעדכון נשמר ב"עדכון בארכיון".`, 'ok');
 }
+
+/* ---------------- Layout: the studio fits the window under the bar ---------------- */
+function measureBar() {
+  const bar = document.querySelector('.topbar');
+  if (bar) document.documentElement.style.setProperty('--bar', `${bar.offsetHeight}px`);
+}
+addEventListener('resize', measureBar);
+measureBar();
 
 /* ---------------- Boot ---------------- */
 function escapeHtml(s) {

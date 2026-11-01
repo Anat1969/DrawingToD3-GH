@@ -397,3 +397,117 @@ function blur(src, mask, W, H, passes, fixed) {
   }
   return a;
 }
+
+/**
+ * Focus per pixel (0..1): local energy of the Laplacian, the classic focus measure of
+ * depth-from-focus (Nayar & Nakagawa, 1994). In a photograph what is sharp is near the plane
+ * of focus and what is blurred (bokeh) is far from it (Anat, 1.11.2026: "sharpness and a blurred
+ * background", "near and far, not a continuous depth").
+ * ratio: energy at the 90th percentile over the 20th. A shallow-focus photograph reads 30 and
+ * more; drawings, paintings and deep-focus landscapes read about 4 to 7.
+ */
+export function focusMap(img) {
+  const { width: W, height: H, data } = img, N = W * H;
+  const L = new Float32Array(N);
+  for (let p = 0; p < N; p++) { const i = p * 4; L[p] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]; }
+  // A light blur first, so JPEG noise does not read as detail.
+  const S = new Float32Array(N);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    let s = 0, n = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const xx = Math.min(W - 1, Math.max(0, x + dx)), yy = Math.min(H - 1, Math.max(0, y + dy));
+      s += L[yy * W + xx]; n++;
+    }
+    S[y * W + x] = s / n;
+  }
+  const lap = new Float32Array(N);
+  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+    const p = y * W + x;
+    lap[p] = Math.abs(4 * S[p] - S[p - 1] - S[p + 1] - S[p - W] - S[p + W]);
+  }
+  const r = Math.max(2, Math.round(Math.max(W, H) / 27));
+  const E = boxMean2(lap, W, H, r);
+  // Blank paper is not a blurred background: it has no detail at all, which would make any line
+  // drawing look like a shallow-focus photograph. The ratio is measured where there is picture.
+  const picture = [];
+  for (let p = 0; p < N; p++) {
+    const i = p * 4, mx = Math.max(data[i], data[i + 1], data[i + 2]), mn = Math.min(data[i], data[i + 1], data[i + 2]);
+    const paper = L[p] > 205 && (mx - mn) < 0.14 * mx;
+    if (!paper) picture.push(E[p]);
+  }
+  const sortedAll = Float32Array.from(E).sort();
+  const top = sortedAll[Math.min(N - 1, Math.floor(0.98 * N))] || 1;
+  const F = new Float32Array(N);
+  for (let p = 0; p < N; p++) F[p] = Math.min(1, E[p] / top);
+  if (picture.length < N * 0.35) return { F, ratio: 1 }; // mostly paper: a drawing
+  const sorted = Float32Array.from(picture).sort();
+  const pct = (q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
+  return { F, ratio: pct(0.9) / Math.max(1e-6, pct(0.2)) };
+}
+
+/** A shallow-focus photograph: a sharp subject against a blurred background. */
+export const isLayeredPhoto = (focus) => focus.ratio > 10; // photos 14 to 27 at 560 px, drawings and paintings 3 to 4
+
+/**
+ * The sharp subject as a mask (w x h): focus above a threshold, gaps closed, holes filled, the
+ * large parts kept. This is the near layer; everything else is the far one.
+ */
+export function foregroundFromFocus(F, W, H, threshold = 0.18) {
+  let m = new Uint8Array(W * H);
+  for (let p = 0; p < W * H; p++) m[p] = F[p] > threshold ? 1 : 0;
+  const r = Math.max(1, Math.round(Math.max(W, H) / 80));
+  for (let i = 0; i < r; i++) m = dilate(m, W, H);
+  for (let i = 0; i < r; i++) m = erode(m, W, H);
+  // Fill holes: whatever the outside cannot reach is inside (the face behind the camera).
+  const out = new Uint8Array(W * H), stack = [];
+  for (let x = 0; x < W; x++) stack.push(x, (H - 1) * W + x);
+  for (let y = 0; y < H; y++) stack.push(y * W, y * W + W - 1);
+  while (stack.length) {
+    const p = stack.pop();
+    if (out[p] || m[p]) continue;
+    out[p] = 1;
+    const x = p % W, y = (p / W) | 0;
+    if (x > 0) stack.push(p - 1); if (x < W - 1) stack.push(p + 1);
+    if (y > 0) stack.push(p - W); if (y < H - 1) stack.push(p + W);
+  }
+  for (let p = 0; p < W * H; p++) m[p] = out[p] ? 0 : 1;
+  // Opening: thin bridges (a row of bokeh lights touching the hand) are not the subject.
+  const ro = Math.max(2, Math.round(Math.max(W, H) / 35));
+  let o = m;
+  for (let i = 0; i < ro; i++) o = erode(o, W, H);
+  o = keepLargeComponents(o, W, H, 0.15);
+  for (let i = 0; i < ro; i++) o = dilate(o, W, H);
+  for (let p = 0; p < W * H; p++) o[p] &= m[p];
+  return keepLargeComponents(o, W, H, 0.08);
+}
+
+/**
+ * An analysis like analysePixels, from a ready mask (w0 x h0): the near layer of a photograph
+ * becomes a body the same way a drawn silhouette does.
+ */
+export function analyseMask(mask0, w0, h0) {
+  const pad = 2, W = w0 + pad * 2, H = h0 + pad * 2, N = W * H;
+  const mask = new Uint8Array(N);
+  let area = 0;
+  for (let y = 0; y < h0; y++) for (let x = 0; x < w0; x++) if (mask0[y * w0 + x]) { mask[(y + pad) * W + x + pad] = 1; area++; }
+  if (area < w0 * h0 * 0.01) throw Object.assign(new Error('no_subject'), { code: 'no_subject' });
+  const dist = chamfer(mask, W, H);
+  const rim = new Uint8Array(N);
+  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+    const p = y * W + x;
+    if (!mask[p]) continue;
+    for (let dy = -1; dy <= 1 && !rim[p]; dy++) for (let dx = -1; dx <= 1; dx++) if (!mask[p + dy * W + dx]) { rim[p] = 1; break; }
+  }
+  return { W, H, pad, w0, h0, mask, dist, ink: new Float32Array(N), rim };
+}
+
+function boxMean2(v, W, H, r) {
+  const I = new Float64Array((W + 1) * (H + 1));
+  for (let y = 0; y < H; y++) { let row = 0; for (let x = 0; x < W; x++) { row += v[y * W + x]; I[(y + 1) * (W + 1) + x + 1] = I[y * (W + 1) + x + 1] + row; } }
+  const out = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const x0 = Math.max(0, x - r), x1 = Math.min(W, x + r + 1), y0 = Math.max(0, y - r), y1 = Math.min(H, y + r + 1);
+    out[y * W + x] = (I[y1 * (W + 1) + x1] - I[y0 * (W + 1) + x1] - I[y1 * (W + 1) + x0] + I[y0 * (W + 1) + x0]) / ((x1 - x0) * (y1 - y0));
+  }
+  return out;
+}

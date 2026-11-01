@@ -320,3 +320,106 @@ input[type="range"] { accent-color: var(--window); width: 120px; }
 .sk-sculpt { display: grid; gap: 14px; }
 .sketch-panel[data-shows="sculpt"] .sk-line { display: none; }
 .sketch-panel[data-shows="line"] .sk-sculpt { display: none; }
+
+/* ---------- Compact studio (Anat, 1.11.2026) ----------
+   The whole studio fits the window: no page scroll, an efficient order, controls without frames,
+   only the relevant tools. The atmosphere stays in the light and the darkness, not in borders. */
+.btn, .toggle, .seg, .seg button, .option label, .drop { border: 0; }
+.btn { background: rgba(236, 228, 214, 0.07); padding: 8px 14px; font-size: 13.5px; }
+.btn:hover:not(:disabled) { background: rgba(236, 228, 214, 0.15); border: 0; }
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn.quiet { background: transparent; }
+.btn.quiet:hover:not(:disabled) { background: rgba(236, 228, 214, 0.08); }
+.btn.primary { border: 0; }
+.seg { gap: 2px; }
+.seg button + button { border: 0; }
+.seg button { background: rgba(236, 228, 214, 0.06); padding: 6px 11px; font-size: 13px; }
+.seg button:hover { background: rgba(236, 228, 214, 0.13); }
+.seg button[aria-pressed="true"] { color: var(--ink-0); background: var(--paper); }
+.toggle { background: rgba(236, 228, 214, 0.06); padding: 6px 11px; font-size: 13px; }
+.toggle:hover { background: rgba(236, 228, 214, 0.13); }
+.toggle[aria-pressed="true"] { border: 0; background: rgba(236, 228, 214, 0.18); color: var(--paper); }
+.drop { background: rgba(236, 228, 214, 0.04); outline: 1px dashed rgba(236, 228, 214, 0.18); outline-offset: -1px; }
+.drop:hover, .drop.over { outline-color: var(--window); }
+/* Engine: three chips, and one line about the chosen one. */
+.option.engine { display: flex; flex-wrap: wrap; gap: 2px; }
+.option.engine legend { width: 100%; margin-bottom: 4px; }
+.option.engine label { position: relative; padding: 6px 11px; background: rgba(236, 228, 214, 0.06); font-size: 13px; }
+.option.engine label input { position: absolute; opacity: 0; pointer-events: none; }
+.option.engine label small { display: none; }
+.option.engine label b { margin: 0; font-weight: 400; color: var(--muted); }
+.option.engine label:has(input:checked) { background: var(--paper); }
+.option.engine label:has(input:checked) b { color: var(--ink-0); font-weight: 600; }
+.option.engine label:has(input:focus-visible) { outline: 1.5px solid var(--window); }
+.engine-note { margin: 4px 0 0; font-size: 12.5px; }
+.option.engine label:has(input:disabled) { opacity: 0.5; }
+
+@media (min-width: 961px) {
+  main { max-width: none; padding: 10px 16px 10px; }
+  .view[data-view="studio"] { height: calc(100dvh - var(--bar, 57px) - 20px); gap: 0; }
+  .view[data-view="studio"] > .intro { display: none; }
+  .studio { grid-template-columns: minmax(0, 1fr) 372px; height: 100%; align-items: stretch; gap: 14px; }
+  .stage-wrap { grid-template-rows: minmax(0, 1fr) auto auto; gap: 6px; height: 100%; min-height: 0; }
+  .stage { aspect-ratio: auto; height: 100%; min-height: 0; }
+  .stage-tools { gap: 6px 10px; }
+  .anim { padding: 0; gap: 6px 10px; }
+  .anim .btn { padding: 6px 12px; font-size: 13px; }
+  .bench { height: 100%; min-height: 0; overflow-y: auto; gap: 8px; align-content: start; scrollbar-width: thin; }
+  .panel { padding: 12px 14px; box-shadow: none; }
+  .panel h2 { margin: 0 0 8px; font-size: 13.5px; }
+  .drop { min-height: 0; padding: 6px; grid-template-columns: auto; }
+  .preview { max-height: 104px; }
+  .drop-empty strong { font-size: 15px; }
+  #drop-hint { display: none; }
+  .option { margin-top: 10px; }
+  .engine-panel { gap: 6px; margin-top: 8px; }
+  .slider { grid-template-columns: 6.6em minmax(0, 1fr) 2em; gap: 6px; font-size: 12.5px; }
+  .slider small, .check small, .light-ctl small { display: none; }
+  .check { font-size: 12.5px; }
+  .actions { margin-top: 8px; gap: 6px; }
+  .status { margin-top: 6px; font-size: 12.5px; min-height: 0; line-height: 1.5; }
+  .status:empty { display: none; }
+  .reading-note { margin: 2px 0 0; font-size: 12px; line-height: 1.5; }
+  .sk-row { gap: 4px; }
+  .facts { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 0; }
+  .facts div { display: grid; gap: 0; padding: 0; border: 0; }
+  .facts dt { font-size: 11px; color: var(--faint); }
+  .facts dd { font-size: 12px; text-align: right; }
+  #factSource, #factClosed { font-size: 12px; text-align: right; }
+  .downloads { margin-top: 8px; gap: 4px; }
+  .downloads .btn { padding: 6px 10px; }
+  .save { margin-top: 8px; padding-top: 8px; gap: 6px; }
+  .name-field { gap: 2px; font-size: 12.5px; }
+  .name-field input { padding: 6px 10px; }
+  .sketch-panel { gap: 8px; }
+  .keys { display: none; }
+  .service { padding-top: 8px; font-size: 12.5px; }
+}
+@media (min-width: 961px) {
+  .view[data-view="studio"] { grid-template-rows: minmax(0, 1fr); }
+  .studio { min-height: 0; grid-template-rows: minmax(0, 1fr); }
+  .stage-wrap, .bench { min-height: 0; max-height: 100%; }
+  .downloads small, .facts div:nth-child(2) { display: none; }
+  .facts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (min-width: 961px) {
+  /* One line under the stage: drawing from the start on one side, view tools on the other. */
+  .stage-wrap { grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: minmax(0, 1fr) auto; column-gap: 14px; }
+  .stage-wrap > h2 { position: absolute; }
+  .stage { grid-column: 1 / -1; }
+  .anim { grid-column: 1; grid-row: 2; }
+  .stage-tools { grid-column: 2; grid-row: 2; justify-content: flex-end; }
+  .anim[hidden] + .stage-tools, .stage-tools:only-of-type { grid-column: 1 / -1; }
+  /* Sliders in two columns, the name above its slider. */
+  .engine-panel[data-engine-panel="line"], .engine-panel[data-engine-panel="local"] { grid-template-columns: 1fr 1fr; column-gap: 14px; row-gap: 4px; }
+  .engine-panel .slider { grid-template-columns: minmax(0, 1fr) 2em; row-gap: 0; }
+  .engine-panel .slider > span { grid-column: 1 / -1; }
+  .engine-panel .check, .engine-panel .sk-row { grid-column: span 1; }
+  .engine-panel .sk-row { grid-column: 1 / -1; }
+  /* Headings that the content explains are left to screen readers. */
+  .bench .panel > h2 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .drop { padding: 4px; }
+  .preview { max-height: 84px; }
+  .name-field > span { display: none; }
+  .save { align-items: center; }
+}
