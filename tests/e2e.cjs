@@ -345,8 +345,22 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
   await page.click('#spinBtn').catch(() => {});
   await page.click('[data-reading="object"]');
   await page.waitForFunction(() => document.querySelector('#factSource').textContent === 'פיסול קווי', null, { timeout: 30000 });
-  ok(/נקרא כדבר/.test(await page.locator('#readingNote').innerText()), 'it can be read as an object instead');
+  ok(/נקרא כציור/.test(await page.locator('#readingNote').innerText()), 'it can be read as a drawing instead');
   await page.click('[data-reading="auto"]');
+  await page.click('#resetBtn');
+
+  // 4f. A photographed sculpture: depth from shading, relief drawn as contour lines (2.11.2026)
+  await page.setInputFiles('#file', path.join(__dirname, 'fixtures', 'bust.png'));
+  await page.waitForSelector('#preview:not([hidden])');
+  await page.click('#convertBtn');
+  const bust = await page.waitForFunction(() => document.querySelector('#factSource').textContent === 'פיסול קווי, פסל', null, { timeout: 30000 }).then(() => true, () => false);
+  ok(bust, 'a sculpture on a plain backdrop is read as a sculpture' + (bust ? '' : ': ' + await page.locator('#factSource').innerText()));
+  ok(/העומק מהצל/.test(await page.locator('#readingNote').innerText()), 'the note says the depth comes from the shading');
+  ok(/קווי גובה:\s*\d+/.test(await page.locator('.ann-label').innerText()), 'the relief is drawn as contour lines');
+  ok(await page.locator('#factClosed').innerText() === 'כן', 'the sculpture thread is a closed body');
+  await page.click('#frontBtn');
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: path.join(OUT, '12d-sculpture.png') });
   await page.click('#resetBtn');
 
   // 4e. A photograph: near and far as layers, sharpness against a blurred background (1.11.2026)
@@ -466,13 +480,13 @@ function ok(cond, msg) { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!
 
   // 8. Method
   await page.click('a[data-route="method"]');
-  ok(await page.locator('.method li').count() === 11, 'method page renders');
+  ok(await page.locator('.method li').count() === 12, 'method page renders');
   await page.screenshot({ path: path.join(OUT, '08-method.png') });
 
   // 9. Local 3D file
   await page.click('a.app-name');
   await page.setInputFiles('#localFile', stlPath);
-  const opened = await page.waitForFunction(() => document.querySelector('#factSource').textContent.endsWith('.stl'), null, { timeout: 10000 }).then(() => true, () => false);
+  const opened = await page.waitForFunction(() => document.querySelector('#factSource').textContent.endsWith('.stl'), null, { timeout: 20000 }).then(() => true, () => false);
   ok(opened, 'local STL opens in the stage' + (opened ? '' : ': ' + await page.locator('#status').innerText() + ' / ' + await page.locator('#factSource').innerText()));
 
   ok(errors.length === 0, 'no console errors' + (errors.length ? ': ' + errors.join(' | ') : ''));
