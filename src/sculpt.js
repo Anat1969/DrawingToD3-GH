@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { analysePixels, buildSculpt, heightField, isClosed, focusMap, isLayeredPhoto, foregroundFromFocus, analyseMask, DEFAULTS } from './sculpt-core.js';
 import { findHorizon, isLandscape, sceneCamera, standingThings } from './scene-core.js';
+import { diffuseDepth, photoAnchors, sculptureAnchors, luminance, isolines, PHOTO_SIGMA } from './depth-core.js';
 import { extractStrokes, liftStrokes, tubeMesh, wrapLoops, depthScale, wireRadius, threadThroughInk, stitchLoops, makeRouter, threadColours, identityMarks, LINE_DEFAULTS } from './line-core.js';
 
 export { DEFAULTS, LINE_DEFAULTS };
@@ -93,11 +94,19 @@ function photoSculpture(prepared, opts) {
     all.near = s;
   }
   const r = lineSculpture({ ...prepared, analysis: prepared.nearAnalysis }, { ...opts, reading: 'object', strokes: all.near, photo: true });
-  // The far layer: everything blurred, as a wall of bokeh behind the subject.
+  // Around the subject: one continuous depth from focus, diffused (2.11.2026). The amount of
+  // blur says how far each part is, and the subject's depth flows out into its surroundings, so
+  // the background is a surface that bends away from the subject, not a wall behind a gap.
+  if (!prepared.photoDepth) {
+    const Fg = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) Fg[y * w + x] = prepared.focus.F[Math.round((y * (sh - 1)) / (h - 1)) * sw + Math.round((x * (sw - 1)) / (w - 1))];
+    const { target, conf } = photoAnchors(Fg, prepared.nearGrid);
+    prepared.photoDepth = diffuseDepth(target, conf, luminance(prepared.pixels), w, h, { sigma: PHOTO_SIGMA });
+  }
+  const depthMap = prepared.photoDepth;
   const depth = Math.max(0, Math.min(1, opts.depth ?? LINE_DEFAULTS.depth));
   const unit = 2 / Math.max(w, h);
   const D = 0.7 + 1.8 * depth;
-  const grow = 1 + D / 3.2; // from the front, the far wall fills the same frame
   const pos = [], tint = [], size = [], alpha = [];
   let seed = 9091;
   const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
@@ -119,7 +128,11 @@ function photoSculpture(prepared, opts) {
     const i = (cy * w + cx) * 4;
     const sx = Math.round((x * (sw - 1)) / (w - 1)), sy = Math.round((y * (sh - 1)) / (h - 1));
     const blur = 1 - F[sy * sw + sx];
-    pos.push((x - w / 2) * unit * grow, (h / 2 - y) * unit * grow, -D - rnd() * 0.15);
+    // Behind the subject the wall is far; elsewhere each puff sits at its own diffused depth.
+    const dd = behind ? Math.min(0.15, depthMap[cy * w + cx]) : depthMap[Math.round(y) * w + Math.round(x)];
+    const zz = -(1 - dd) * D;
+    const grow = 1 - zz / 3.2; // from the front, every depth fills the same frame
+    pos.push((x - w / 2) * unit * grow, (h / 2 - y) * unit * grow, zz - rnd() * 0.08);
     tint.push(data[i] / 255, data[i + 1] / 255, data[i + 2] / 255);
     size.push((0.035 + 0.11 * blur * rnd()) * grow * (behind ? 1.8 : 1)); // the more blurred, the larger the disc; behind the subject, a softer fill
     alpha.push(0.22 + 0.3 * rnd());
@@ -132,6 +145,51 @@ function photoSculpture(prepared, opts) {
   let nearShare = 0;
   for (const v of prepared.nearGrid) nearShare += v;
   return { ...r, reading: 'photo', nearShare: nearShare / (w * h), focusRatio: prepared.focus.ratio };
+}
+
+/**
+ * A sculpture, photographed (Anat, 2.11.2026): the silhouette gives the body, the shading gives
+ * the relief (under soft light, darker is deeper: Langer & Zucker, 1994), and diffusion joins
+ * them into one depth. A photographed sculpture has few drawn lines, so its relief is drawn as
+ * contour lines of equal depth, the courses of a wire sculpture; they join the drawn lines into
+ * the one thread, and the stitch binds the outline.
+ */
+function sculptureSculpture(prepared, opts) {
+  const a = prepared.analysis;
+  if (!a) throw prepared.analysisError;
+  const { W, H, pad, w0, h0, mask, dist } = a;
+  const { sw, sh } = prepared.strokeSize;
+  if (!prepared.sculptDepth) {
+    const Lp = luminance(prepared.pixels), G = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const px = Math.max(0, Math.min(w0 - 1, x - pad)), py = Math.max(0, Math.min(h0 - 1, y - pad));
+      G[y * W + x] = Lp[py * w0 + px];
+    }
+    const { target, conf } = sculptureAnchors(G, mask, dist, W, H);
+    const D = diffuseDepth(target, conf, G, W, H, { sigma: 30 });
+    let dmax = 0;
+    for (let p = 0; p < W * H; p++) if (mask[p] && dist[p] > dmax) dmax = dist[p];
+    const height = new Float32Array(W * H);
+    for (let p = 0; p < W * H; p++) height[p] = mask[p] ? Math.max(0, D[p] - 0.1) * 0.9 * dmax : 0; // a full round body
+    const levels = [];
+    for (let v = 0.3; v < 0.95; v += 0.075) levels.push(v);
+    const toStroke = ([gx, gy]) => [((gx - pad) / (w0 - 1)) * (sw - 1), ((gy - pad) / (h0 - 1)) * (sh - 1)];
+    prepared.sculpt3 = { height, contours: isolines(D, W, H, levels, mask, 6).map((l) => l.map(toStroke)) };
+  }
+  const all = strokesFor(prepared, opts.sensitivity);
+  if (!all.withContours) {
+    const s = all.concat(prepared.sculpt3.contours);
+    s.ink = all.ink.slice();
+    for (const l of prepared.sculpt3.contours) for (let i = 1; i < l.length; i++) {
+      const [x0, y0] = l[i - 1], [x1, y1] = l[i], n = Math.ceil(Math.hypot(x1 - x0, y1 - y0)) + 1;
+      for (let k = 0; k <= n; k++) { const x = Math.round(x0 + ((x1 - x0) * k) / n), y = Math.round(y0 + ((y1 - y0) * k) / n); if (x >= 0 && y >= 0 && x < sw && y < sh) s.ink[y * sw + x] = 1; }
+    }
+    s.size = all.size;
+    s.lineWidth = all.lineWidth;
+    all.withContours = s;
+  }
+  const r = lineSculpture(prepared, { ...opts, reading: 'object', heightOverride: prepared.sculpt3.height, strokes: all.withContours });
+  return { ...r, reading: 'sculpture', contours: prepared.sculpt3.contours.length };
 }
 
 /**
@@ -328,20 +386,53 @@ export function sculptMesh(prepared, opts) {
 /** Line sculpture: the ink as one wire in space, colour as transparent smoke. */
 /** How the picture is read: 'object' (inflated and wrapped) or 'scene' (laid out in depth). */
 export function readingOf(prepared, choice = 'auto') {
-  if (choice === 'object' || choice === 'scene' || choice === 'photo') return choice;
+  if (choice === 'object' || choice === 'scene' || choice === 'photo' || choice === 'sculpture') return choice;
+  if (prepared.analysis && looksSculpted(prepared)) return 'sculpture'; // a plain backdrop: its smooth shading is not a blurred background
   if (prepared.focus && isLayeredPhoto(prepared.focus)) return 'photo';
-  return isLandscape(prepared.horizon) || !prepared.analysis ? 'scene' : 'object';
+  if (isLandscape(prepared.horizon) || !prepared.analysis) return 'scene';
+  return 'object';
+}
+
+/**
+ * A photographed sculpture, three cues together (measured 2.11.2026 on all the test pictures):
+ *   few drawn lines: under 1.5 per 100 pixels (a bust 0.7, drawings and paintings 3.2 to 8.4);
+ *   soft shading inside: over 55% of the subject has a gentle gradient (bust 0.66; flat fills of
+ *     the sample house 0.02, zebras 0.15);
+ *   a plain backdrop around it: over 30% of the picture (bust 0.49; the photographer 0.10, whose
+ *     blurred background varies).
+ */
+function looksSculpted(prepared) {
+  if (prepared.sculpted !== undefined) return prepared.sculpted;
+  const st = strokesFor(prepared, LINE_DEFAULTS.sensitivity);
+  const { sw, sh } = prepared.strokeSize;
+  const len = st.reduce((a, s) => a + s.slice(1).reduce((b, p, i) => b + Math.hypot(p[0] - s[i][0], p[1] - s[i][1]), 0), 0);
+  const density = (len / (sw * sh)) * 100;
+  const { width: W, height: H, data: d } = prepared.pixels;
+  const bg = [d[0], d[1], d[2]];
+  const L = luminance(prepared.pixels);
+  let inside = 0, soft = 0, backdrop = 0;
+  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+    const p = y * W + x, i = p * 4;
+    if (Math.abs(d[i] - bg[0]) + Math.abs(d[i + 1] - bg[1]) + Math.abs(d[i + 2] - bg[2]) <= 30) { backdrop++; continue; }
+    inside++;
+    const g = Math.hypot(L[p + 1] - L[p - 1], L[p + W] - L[p - W]);
+    if (g > 1.5 && g < 14) soft++;
+  }
+  const area = (W - 2) * (H - 2);
+  prepared.sculpted = density < 1.5 && inside > 0 && soft / inside > 0.55 && backdrop / area > 0.3;
+  return prepared.sculpted;
 }
 
 export function lineSculpture(prepared, opts) {
   const reading = readingOf(prepared, opts.reading);
   if (reading === 'scene') return sceneSculpture(prepared, opts);
   if (reading === 'photo') return photoSculpture(prepared, opts);
+  if (reading === 'sculpture') return sculptureSculpture(prepared, opts);
   if (!prepared.analysis) throw prepared.analysisError;
   const a = prepared.analysis;
   const { W, pad, w0, h0 } = a;
   const unit = 2 / Math.max(w0, h0);
-  const h = heightField(a, { volume: 0.6, line: 0 });
+  const h = opts.heightOverride || heightField(a, { volume: 0.6, line: 0 });
   const sample = (gx, gy) => {
     const x0 = Math.max(0, Math.min(W - 2, Math.floor(gx))), y0 = Math.max(0, Math.min(a.H - 2, Math.floor(gy)));
     const fx = Math.min(1, Math.max(0, gx - x0)), fy = Math.min(1, Math.max(0, gy - y0));

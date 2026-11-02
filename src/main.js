@@ -75,6 +75,7 @@ function showSample() {
 let ann = null;
 function annText(info) {
   const [x, y, z] = info.proportion;
+  if (info.reading === 'sculpture') return `<b>פסל:</b> גוף ותבליט מהצל · <b>קווי גובה:</b> <span dir="ltr">${info.contours}</span><br><b>קווים:</b> <span dir="ltr">${info.lines}</span>${info.continuous ? ' · חוט אחד' : ''}`;
   if (info.reading === 'photo') return `<b>צילום:</b> קרוב <span dir="ltr">${Math.round(info.nearShare * 100)}%</span> · רחוק כרקע<br><b>קווים:</b> <span dir="ltr">${info.lines}</span>${info.continuous ? ' · חוט אחד' : ''}`;
   if (info.reading === 'scene') return `<b>נוף:</b> אופק ב-<span dir="ltr">${Math.round(info.horizon * 100)}%</span> מהגובה · <b>עומדים:</b> <span dir="ltr">${info.standing}</span><br><b>קווים:</b> <span dir="ltr">${info.lines}</span>${info.continuous ? ' · חוט אחד' : ''}`;
   if (info.lines) return `<b>קווים:</b> <span dir="ltr">${info.lines}</span> · <b>ליפופים:</b> <span dir="ltr">${info.loops || 0}</span>${info.continuous ? ' · חוט אחד' : ''}<br><b>פרופורציה:</b> <span dir="ltr">${x} × ${y} × ${z}</span>`;
@@ -414,7 +415,7 @@ function setParams(p = {}) {
   set(el.lineRelief, el.lineVal, p.line);
   if (typeof p.continuous === 'boolean') el.continuous.checked = p.continuous;
   document.getElementById('colourThread').checked = p.colour !== false;
-  setReading(['auto', 'object', 'scene', 'photo'].includes(p.reading) ? p.reading : 'auto');
+  setReading(['auto', 'object', 'sculpture', 'scene', 'photo'].includes(p.reading) ? p.reading : 'auto');
   set(el.wrap, el.wrapVal, p.wrap);
   set(el.sensitivity, el.sensitivityVal, p.sensitivity);
   set(el.cloud, el.cloudVal, typeof p.smoke === 'boolean' ? (p.smoke ? 0.6 : 0) : p.cloud); // works saved before the cloud slider
@@ -429,7 +430,7 @@ function renderSculpt(keepView) {
     state.anim = r.animation;
     play.p = 1;
     showProgress();
-    info = stage.setObject(r.object, { source: r.reading === 'scene' ? 'פיסול קווי, נוף' : r.reading === 'photo' ? 'פיסול קווי, צילום' : 'פיסול קווי', nearShare: r.nearShare, closed: r.closed, lines: r.lines, loops: r.loops, continuous: r.continuous, reading: r.reading, horizon: r.horizon, standing: r.standing, viewpoint: r.viewpoint }, { keepView });
+    info = stage.setObject(r.object, { source: r.reading === 'scene' ? 'פיסול קווי, נוף' : r.reading === 'photo' ? 'פיסול קווי, צילום' : r.reading === 'sculpture' ? 'פיסול קווי, פסל' : 'פיסול קווי', nearShare: r.nearShare, contours: r.contours, closed: r.closed, lines: r.lines, loops: r.loops, continuous: r.continuous, reading: r.reading, horizon: r.horizon, standing: r.standing, viewpoint: r.viewpoint }, { keepView });
     showReading(r);
   } else {
     stopDrawing(true);
@@ -468,11 +469,14 @@ document.querySelectorAll('[data-reading]').forEach((b) => b.addEventListener('c
 function showReading(r) {
   const note = document.getElementById('readingNote');
   const auto = state.reading === 'auto';
-  note.textContent = r.reading === 'photo'
-    ? `${auto ? 'זוהה צילום' : 'נקרא כצילום'}: מה שבפוקוס (${Math.round(r.nearShare * 100)}% מהתמונה) הוא השכבה הקרובה, עם קווים ונפח. מה שמטושטש עומד מאחור כקיר של כתמי אור רכים. "חזית" מחזירה את התמונה השלמה.`
+  // Each category says where its depth comes from; diffusion joins it all into one surface.
+  note.textContent = r.reading === 'sculpture'
+    ? `${auto ? 'זוהה פסל' : 'נקרא כפסל'}: העומק מהצל. הצללית נותנת גוף, ובאור רך כהה הוא עמוק, ולכן קמטים ושקעים נסוגים. קווי גובה (${r.contours}) מציירים את התבליט כחוט, כמו פסל תיל.`
+    : r.reading === 'photo'
+    ? `${auto ? 'זוהה צילום' : 'נקרא כצילום'}: העומק מהחדות. מה שבפוקוס (${Math.round(r.nearShare * 100)}%) קרוב, עם קווים ונפח. כמה שהטשטוש גדול יותר, רחוק יותר, והעומק זורם ברצף מהנושא אל הרקע. "חזית" מחזירה את התמונה השלמה.`
     : r.reading === 'scene'
     ? `${auto ? 'זוהה נוף' : 'נקרא כנוף'}: קו אופק ב-${Math.round(r.horizon * 100)}% מהגובה. הקרקע נפרשת לעומק, השמיים עומדים מאחור, ו${r.standing ? 'הדבר העומד' : 'כל מה שבתמונה'} ${r.standing ? 'עומד במקום שבו הוא נוגע בקרקע' : 'שוכב על הקרקע'}. "חזית" מחזירה למבט של הציור.`
-    : `${auto ? 'זוהה דבר' : 'נקרא כדבר'}: הגוף מנופח אל המתבונן, והחוט עוטף את המתאר.`;
+    : `${auto ? 'זוהה ציור' : 'נקרא כציור'}: העומק מהצללית. הגוף מתנפח מהמתאר אל המתבונן, והחוט עוטף את המתאר.`;
 }
 
 /* ---------------- Drawing the work from the first line (animation) ---------------- */
