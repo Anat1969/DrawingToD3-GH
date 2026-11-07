@@ -871,6 +871,7 @@ function route() {
   if (hash.startsWith('#/archive')) view = 'archive';
   else if (hash.startsWith('#/draw')) { nav = 'draw'; sketchId = decodeURIComponent(hash.slice(7)) || null; }
   else if (hash.startsWith('#/method')) view = 'method';
+  else if (hash.startsWith('#/creations')) view = 'creations';
   else if (hash.startsWith('#/model/')) modelId = decodeURIComponent(hash.slice(8));
   else if (hash.startsWith('#/work/')) workId = decodeURIComponent(hash.slice(7));
 
@@ -880,7 +881,7 @@ function route() {
     if (a.dataset.route === (nav || view)) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   });
-  document.title = nav === 'draw' ? 'ציור במרחב | ציור לתלת-ממד' : { studio: 'ציור לתלת-ממד', archive: 'ארכיון | ציור לתלת-ממד', method: 'שיטה | ציור לתלת-ממד' }[view];
+  document.title = nav === 'draw' ? 'ציור במרחב | ציור לתלת-ממד' : { studio: 'ציור לתלת-ממד', archive: 'ארכיון | ציור לתלת-ממד', method: 'שיטה | ציור לתלת-ממד', creations: 'כתבות | ציור לתלת-ממד' }[view];
   if (view === 'archive') renderArchive();
   if (modelId && modelId !== state.jobId) {
     state.jobId = modelId;

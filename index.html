@@ -13,6 +13,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gveret+Levin&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Hebrew:wght@200;300;400;600&display=swap">
   <script src="https://appofapp-gh.vercel.app/ai-menu.js" defer></script>
+  <script src="https://anat1969.github.io/AppOfApp-GH/creations.js" defer onerror="var s=document.createElement('script');s.src='https://appofapp-gh.vercel.app/creations.js';document.head.appendChild(s)"></script>
 </head>
 <body>
   <!-- Background layers: the far haze and the window light. Atmospheric perspective. -->
@@ -33,6 +34,7 @@
         <a href="#/draw" data-route="draw">ציור במרחב</a>
         <a href="#/archive" data-route="archive">ארכיון</a>
         <a href="#/method" data-route="method">שיטה</a>
+        <a href="#/creations" data-route="creations">כתבות</a>
       </nav>
       <ai-menu chat="https://claude.ai/code/session_018qeN1BZMy6PeCCXiu5GKpY"></ai-menu>
     </div>
@@ -307,6 +309,11 @@
         <li><b>הדפסה:</b> STL או 3MF<p>לפני הדפסה פותחים את הקובץ בתוכנת הפריסה ובודקים שהגוף סגור ובקנה המידה הנכון.</p></li>
       </ol>
       <p class="fineprint">בפיסול המקומי הציור לא יוצא מהמכשיר. במנוע הבינה המלאכותית הציור נשלח לשירות Meshy דרך השרת של האפליקציה. מפתח השירות נשמר בשרת בלבד. מעלים רק ציורים שהזכויות בהם שלך.</p>
+    </section>
+
+    <!-- ARTICLES: one A4 article per topic, from the method page (public/creations.json, tools/creations.mjs) -->
+    <section class="view" data-view="creations" aria-label="כתבות" hidden>
+      <app-creations src="./creations.json" heading="מה ציור לתלת-ממד כותב"></app-creations>
     </section>
   </main>
 
