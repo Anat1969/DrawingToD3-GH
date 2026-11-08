@@ -70,3 +70,30 @@ test('standing things: a tree at the side runs off the bottom edge and still sta
   const ground = things.find((t) => t.x0 >= 110);
   assert.ok(ground && !ground.standing, 'the near ground lies');
 });
+
+test('landscape diffusion: one continuous depth, the picture unchanged from its own camera', async () => {
+  const { sceneAnchors, rayPoint } = await import('../src/scene-core.js');
+  const { diffuseDepth } = await import('../src/depth-core.js');
+  const cam = sceneCamera(0.25, 1, 0.5);
+  const W = 80, H = 80, label = new Int32Array(W * H).fill(-1);
+  // A boat standing on the water, touching it at row 0.6.
+  for (let y = 36; y < 48; y++) for (let x = 20; x < 60; x++) label[y * W + x] = 0;
+  const things = [{ standing: true, contact: 0.6 }];
+  const { target, conf } = sceneAnchors(cam, label, things, W, H, W, H);
+  const guide = new Float32Array(W * H).fill(128);
+  const T = diffuseDepth(target, conf, guide, W, H, { sigma: 20 });
+  assert.ok(T.every((v) => Number.isFinite(v) && v > 0), 'every point has a depth');
+  // The ground recedes toward the horizon, and the boat sits at the depth of its contact.
+  assert.ok(T[78 * W + 40] > T[60 * W + 40] && T[60 * W + 40] > T[30 * W + 40], 'near at the bottom, far at the horizon');
+  const boat = T[42 * W + 40], contact = cam.near / cam.groundDepth(0.6);
+  assert.ok(Math.abs(boat - contact) < 0.08, `the boat at its contact depth (${boat.toFixed(2)} vs ${contact.toFixed(2)})`);
+  // Continuous: down a column, no step larger than a small share of the range.
+  let maxStep = 0;
+  for (let y = 1; y < H; y++) maxStep = Math.max(maxStep, Math.abs(T[y * W + 5] - T[(y - 1) * W + 5]));
+  assert.ok(maxStep < 0.08, `no fold where the ground meets the back wall (largest step ${maxStep.toFixed(3)})`);
+  // From the picture's camera each point falls exactly on its place.
+  for (const [u, v, t] of [[0.2, 0.9, 0.8], [0.7, 0.4, 0.2], [0.5, 0.1, 0.05]]) {
+    const [x, y, z] = rayPoint(cam, u, v, t), d = -z;
+    assert.ok(Math.abs(cam.aspect / 2 + (x * cam.f) / d - u) < 1e-9 && Math.abs(cam.vh + ((cam.hc - y) * cam.f) / d - v) < 1e-9);
+  }
+});
