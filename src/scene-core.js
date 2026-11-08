@@ -143,3 +143,47 @@ export function standingThings(ink, W, H, horizonRow, opts = {}) {
   }
   return { label, things };
 }
+
+/**
+ * A landscape's depth as anchors for the diffusion (Anat, 3.11.2026: "add diffusion to the
+ * landscape"). Depth is given as nearness t = near / distance (1 at the bottom edge, small far
+ * away), which interpolates the way perspective does. Anchors:
+ *   ground below the horizon, from the camera (sure where nothing stands on it);
+ *   the sky and the far sea at the back wall (sure well above the horizon);
+ *   a standing thing at the nearness of the ground where it touches it (sure inside it).
+ * The diffusion then joins them: the edge of the boat blends into the water around it, and the
+ * ground fades into the back wall instead of folding at a line.
+ * @param label, things  from standingThings, over a W x H grid (the stroke image)
+ * @param gw, gh         the grid of the anchors (smaller, e.g. the 200 px analysis)
+ */
+export function sceneAnchors(cam, label, things, W, H, gw, gh) {
+  const N = gw * gh, t = new Float32Array(N), c = new Float32Array(N);
+  const tFar = cam.near / cam.far;
+  for (let y = 0; y < gh; y++) for (let x = 0; x < gw; x++) {
+    const p = y * gw + x;
+    const sx = Math.round((x / (gw - 1)) * (W - 1)), sy = Math.round((y / (gh - 1)) * (H - 1));
+    const id = label ? label[sy * W + sx] : -1;
+    const v = y / (gh - 1); // picture heights from the top (the grid spans the picture height)
+    if (id >= 0 && things[id].standing) {
+      t[p] = cam.near / cam.groundDepth(things[id].contact);
+      c[p] = 0.9;
+      continue;
+    }
+    const d = cam.groundDepth(v);
+    t[p] = cam.near / d;
+    // Sure on the open ground and high in the sky; gentle near the horizon, where the
+    // diffusion decides how the ground turns into the back wall.
+    // A wide soft band where the ground meets the back wall: the ground curves up into it like a
+    // photographer's cyclorama, instead of folding at a line.
+    const k = Math.abs(v - cam.vh - cam.tFar) / 0.2;
+    c[p] = d >= cam.far ? (v < cam.vh - 0.08 ? 0.8 : 0.03) : Math.min(0.85, 0.03 + 0.82 * Math.min(1, k) ** 2);
+    if (t[p] < tFar) t[p] = tFar;
+  }
+  return { target: t, conf: c };
+}
+
+/** A picture point at nearness t, on the camera's ray through it: from the front it stays in place. */
+export function rayPoint(cam, u, v, t) {
+  const d = cam.near / Math.max(1e-4, t);
+  return [((u - cam.aspect / 2) * d) / cam.f, cam.hc - ((v - cam.vh) * d) / cam.f, -d];
+}

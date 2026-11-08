@@ -2,7 +2,7 @@
 // either the inflated body or the line sculpture with Three.js.
 import * as THREE from 'three';
 import { analysePixels, buildSculpt, heightField, isClosed, focusMap, isLayeredPhoto, foregroundFromFocus, analyseMask, DEFAULTS } from './sculpt-core.js';
-import { findHorizon, isLandscape, sceneCamera, standingThings } from './scene-core.js';
+import { findHorizon, isLandscape, sceneCamera, standingThings, sceneAnchors, rayPoint } from './scene-core.js';
 import { diffuseDepth, photoAnchors, sculptureAnchors, luminance, isolines, PHOTO_SIGMA } from './depth-core.js';
 import { extractStrokes, liftStrokes, tubeMesh, wrapLoops, depthScale, wireRadius, threadThroughInk, stitchLoops, makeRouter, threadColours, identityMarks, LINE_DEFAULTS } from './line-core.js';
 
@@ -209,16 +209,27 @@ function sceneSculpture(prepared, opts) {
   // A standing thing has a little body: its lines bulge toward the viewer from its outline.
   if (!strokes.bulge) strokes.bulge = insideDistance(label, things, sw, sh);
   const bulge = strokes.bulge;
+  // One continuous depth for the whole landscape: ground, back wall and standing things as
+  // anchors, joined by diffusion guided by the picture (3.11.2026). Cached per depth setting.
+  const { width: gw, height: gh } = prepared.pixels;
+  const key = Math.round((opts.depth ?? LINE_DEFAULTS.depth) * 100);
+  if (!prepared.sceneDepth || prepared.sceneDepth.key !== key) {
+    const { target, conf } = sceneAnchors(cam, label, things, sw, sh, gw, gh);
+    prepared.sceneDepth = { key, T: diffuseDepth(target, conf, luminance(prepared.pixels), gw, gh, { sigma: 22 }) };
+  }
+  const T = prepared.sceneDepth.T;
+  const nearness = (x, y) => {
+    const gx = Math.max(0, Math.min(gw - 1, (x / (sw - 1)) * (gw - 1))), gy = Math.max(0, Math.min(gh - 1, (y / (sh - 1)) * (gh - 1)));
+    const x0 = Math.min(gw - 2, Math.floor(gx)), y0 = Math.min(gh - 2, Math.floor(gy)), fx = gx - x0, fy = gy - y0, p = y0 * gw + x0;
+    return (T[p] * (1 - fx) + T[p + 1] * fx) * (1 - fy) + (T[p + gw] * (1 - fx) + T[p + gw + 1] * fx) * fy;
+  };
   const at = (x, y) => {
     const xi = Math.max(0, Math.min(sw - 1, Math.round(x))), yi = Math.max(0, Math.min(sh - 1, Math.round(y)));
     const p = yi * sw + xi, id = label[p];
-    const u = x / sh, v = y / sh;
-    if (id >= 0 && things[id].standing) {
-      const q = cam.standing(u, v, things[id].contact);
-      q[2] += cam.worldSize(bulge[p] / sh, -q[2]) * 0.8;
-      return q;
-    }
-    return cam.ground(u, v);
+    const q = rayPoint(cam, x / sh, y / sh, nearness(x, y));
+    // A standing thing keeps a little body: its lines bulge toward the viewer from its outline.
+    if (id >= 0 && things[id].standing) q[2] += cam.worldSize(bulge[p] / sh, -q[2]) * 0.8;
+    return q;
   };
   // Far lines are drawn as thick as near ones look: the weight follows the depth.
   const weightAt = (z) => Math.max(1, Math.min(6, -z / cam.near));
