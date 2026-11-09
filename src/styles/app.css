@@ -439,3 +439,17 @@ input[type="range"] { accent-color: var(--window); width: 120px; }
 /* Articles: the shared component on paper (the one light surface), the page scrolls normally */
 .view[data-view="creations"] app-creations { background: var(--paper); color: var(--ink-1); padding: 28px 24px 40px; box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45); }
 @media (max-width: 640px) { .view[data-view="creations"] app-creations { padding: 18px 12px 28px; } }
+
+/* Pen colours (9.11.2026): square swatches, no frame; the chosen one stands on a paper line. */
+.palette { display: flex; flex-wrap: wrap; gap: 4px; }
+.swatch {
+  position: relative; width: 24px; height: 24px; padding: 0; border: 0; cursor: pointer;
+  background: var(--sw); box-shadow: inset 0 0 0 1px rgba(236, 228, 214, 0.18);
+  transition: transform var(--mid) var(--ease);
+}
+.swatch:hover { transform: translateY(-1px); }
+.swatch:active { transform: translateY(1px); }
+.swatch[aria-pressed="true"], .swatch.on { box-shadow: 0 0 0 2px var(--ink-1), 0 0 0 3px var(--paper); }
+.swatch.custom { background: conic-gradient(#c0392b, #f1c40f, #27ae60, #16a3a8, #2e5fb8, #7d3c98, #c0392b); }
+.swatch.custom.on { background: var(--sw); }
+.swatch.custom input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; border: 0; padding: 0; }

@@ -7,7 +7,16 @@
 
 // result: 'sculpt' reads the drawing and winds it into space (the line sculpture engine),
 //         'line' keeps each line where the pen put it.
-export const SKETCH_DEFAULTS = { thickness: 0.35, plane: 'view', offset: 0, symmetry: false, snap: true, result: 'sculpt', depth: 0.5, wrap: 0.45 };
+export const SKETCH_DEFAULTS = { thickness: 0.35, plane: 'view', offset: 0, symmetry: false, snap: true, result: 'sculpt', depth: 0.5, wrap: 0.45, colour: '#1a1611' };
+// The pen's colours (Anat, 9.11.2026: "no colour in drawing in space, add it"). Ink first.
+export const PALETTE = ['#1a1611', '#c0392b', '#e67e22', '#f1c40f', '#27ae60', '#16a3a8', '#2e5fb8', '#7d3c98', '#d6538f'];
+const HEX = /^#[0-9a-f]{6}$/i;
+export const isColour = (c) => typeof c === 'string' && HEX.test(c);
+/** '#rrggbb' to [r, g, b] in 0..1 (ink when not a colour). */
+export function rgb(c) {
+  const h = isColour(c) ? c : SKETCH_DEFAULTS.colour;
+  return [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255];
+}
 export const RESULTS = ['sculpt', 'line'];
 export const PLANES = ['view', 'wall', 'side', 'floor'];
 export const CENTER = [0, 1, 0]; // the middle of the drawing space, one unit above the floor
@@ -142,11 +151,12 @@ export function nearestPoint(strokes, project, sx, sy, maxPx = SNAP_PX) {
 }
 
 /** Paths for the tube builder, in drawing order (weight 1: one line, one weight). */
-export const tubePaths = (strokes) => strokes.filter((s) => s.pts.length >= 2).map((s) => s.pts.map((p) => [p[0], p[1], p[2], 1]));
+// Each point carries its stroke's colour as a fifth value, for the tube's vertex colours.
+export const tubePaths = (strokes) => strokes.filter((s) => s.pts.length >= 2).map((s) => { const c = rgb(s.c); return s.pts.map((p) => [p[0], p[1], p[2], 1, c]); });
 
 /** Compact form for the archive: flat numbers, four decimals (a tenth of a millimetre at 1 unit = 1 m). */
 export function serialize(strokes) {
-  return strokes.map((s) => ({ g: s.g, p: s.pts.flatMap((q) => q.map((v) => Math.round(v * 1e4) / 1e4)) }));
+  return strokes.map((s) => ({ g: s.g, ...(isColour(s.c) ? { c: s.c.toLowerCase() } : {}), p: s.pts.flatMap((q) => q.slice(0, 3).map((v) => Math.round(v * 1e4) / 1e4)) }));
 }
 
 export function deserialize(list) {
@@ -159,7 +169,7 @@ export function deserialize(list) {
       const q = [Number(s.p[i]), Number(s.p[i + 1]), Number(s.p[i + 2])];
       if (q.every(Number.isFinite)) pts.push(q);
     }
-    if (pts.length >= 2) out.push({ g: Number.isFinite(s.g) ? s.g : out.length, pts });
+    if (pts.length >= 2) out.push({ g: Number.isFinite(s.g) ? s.g : out.length, pts, ...(isColour(s.c) ? { c: s.c.toLowerCase() } : {}) });
   }
   return out;
 }
@@ -174,6 +184,7 @@ export function normalizeParams(p = {}) {
     offset: Number.isFinite(p.offset) ? Math.max(-1, Math.min(1, p.offset)) : SKETCH_DEFAULTS.offset,
     symmetry: typeof p.symmetry === 'boolean' ? p.symmetry : SKETCH_DEFAULTS.symmetry,
     snap: typeof p.snap === 'boolean' ? p.snap : SKETCH_DEFAULTS.snap,
+    colour: isColour(p.colour) ? p.colour.toLowerCase() : SKETCH_DEFAULTS.colour,
     result: RESULTS.includes(p.result) ? p.result : SKETCH_DEFAULTS.result,
     depth: Number.isFinite(p.depth) ? clamp01(p.depth) : SKETCH_DEFAULTS.depth,
     wrap: Number.isFinite(p.wrap) ? clamp01(p.wrap) : SKETCH_DEFAULTS.wrap,

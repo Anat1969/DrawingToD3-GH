@@ -21,6 +21,9 @@ const PENCIL = 0x6b6457;
 export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => {} } = {}) {
   const { scene, camera, controls, canvas } = stage;
   const wireMat = new THREE.MeshStandardMaterial({ color: INK, roughness: 0.4, metalness: 0.3 });
+  // Coloured lines: each vertex carries its stroke's colour (9.11.2026).
+  const colourMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.45, metalness: 0.15 });
+  const colourOf = (q) => q[4] || core.rgb();
   const group = new THREE.Group();
   group.name = 'sketch';
 
@@ -78,7 +81,7 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
   helpers.add(drop, foot);
 
   // The line being drawn right now.
-  const live = new THREE.Mesh(new THREE.BufferGeometry(), wireMat);
+  const live = new THREE.Mesh(new THREE.BufferGeometry(), colourMat);
   live.visible = false;
   helpers.add(live);
 
@@ -179,9 +182,10 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
     undoStack.push(strokes);
     redoStack = [];
     const g = core.nextGroup(strokes);
-    const next = [...strokes, { g, pts }];
+    const c = params.colour;
+    const next = [...strokes, { g, pts, c }];
     const onAxis = pts.every((p) => Math.abs(p[0] - core.CENTER[0]) < 0.01);
-    if (params.symmetry && !onAxis) next.push({ g, pts: core.mirror(pts) });
+    if (params.symmetry && !onAxis) next.push({ g, pts: core.mirror(pts), c });
     strokes = next;
     rebuild();
   }
@@ -193,10 +197,12 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
     const pts = drawing.raw.length > 1 ? drawing.raw : [drawing.raw[0], drawing.s];
     const paths = [pts];
     if (params.symmetry) paths.push(core.mirror(pts));
-    const t = tubeMesh(paths.map((p) => p.map((q) => [q[0], q[1], q[2], 1])), core.radiusFor(params.thickness), 8);
+    const pen = core.rgb(params.colour);
+    const t = tubeMesh(paths.map((p) => p.map((q) => [q[0], q[1], q[2], 1, pen])), core.radiusFor(params.thickness), 8, { colorAt: colourOf });
     live.geometry.dispose();
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(t.positions, 3));
+    g.setAttribute('color', new THREE.BufferAttribute(t.colors, 3));
     g.setIndex(new THREE.BufferAttribute(t.indices, 1));
     g.computeVertexNormals();
     live.geometry = g;
@@ -266,7 +272,9 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
     for (const s of strokes) {
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute(s.pts.flat(), 3));
-      pencil.add(new THREE.Line(g, pencilMat));
+      // The pencil keeps the stroke's colour, softened, so the sheet shows what was drawn in which colour.
+      const m = core.isColour(s.c) && s.c !== core.SKETCH_DEFAULTS.colour ? new THREE.LineBasicMaterial({ color: s.c, transparent: true, opacity: 0.6, depthWrite: false }) : pencilMat;
+      pencil.add(new THREE.Line(g, m));
     }
   }
 
@@ -307,6 +315,26 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
         g.strokeStyle = '#141210';
         g.lineWidth = layout.line;
         g.lineCap = g.lineJoin = 'round';
+        // The page is read in ink; the colours are painted on a second page, wide, so the wound
+        // thread takes the colour of the drawn line it binds (and ink where nothing was drawn).
+        const cc = document.createElement('canvas');
+        cc.width = layout.width; cc.height = layout.height;
+        const cg = cc.getContext('2d');
+        cg.lineCap = cg.lineJoin = 'round';
+        cg.lineWidth = Math.max(layout.width, layout.height) * 0.07;
+        for (const s of strokes) {
+          if (!core.isColour(s.c) || s.c === core.SKETCH_DEFAULTS.colour) continue;
+          cg.strokeStyle = s.c;
+          cg.beginPath();
+          s.pts.forEach((p, i) => { const [x, y] = layout.toPage(p); if (i) cg.lineTo(x, y); else cg.moveTo(x, y); });
+          cg.stroke();
+        }
+        const cdata = cg.getImageData(0, 0, cc.width, cc.height).data;
+        const colourMap = (u, v) => {
+          const x = Math.max(0, Math.min(cc.width - 1, Math.round(u * (cc.width - 1)))), y = Math.max(0, Math.min(cc.height - 1, Math.round(v * (cc.height - 1))));
+          const i = (y * cc.width + x) * 4;
+          return cdata[i + 3] > 40 ? [cdata[i] / 255, cdata[i + 1] / 255, cdata[i + 2] / 255] : core.rgb();
+        };
         for (const s of strokes) {
           g.beginPath();
           s.pts.forEach((p, i) => { const [x, y] = layout.toPage(p); if (i) g.lineTo(x, y); else g.moveTo(x, y); });
@@ -314,12 +342,12 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
         }
         const prepared = await prepareSculpt(c.toDataURL('image/png'));
         if (token !== readToken) return;
-        page = { version, prepared, layout };
+        page = { version, prepared, layout, colourMap };
       }
       // The engine works in page units: the wire radius is given so it lands on the slider's weight.
       const r = lineSculpture(page.prepared, {
         depth: params.depth, wrap: params.wrap, radius: core.radiusFor(params.thickness) / page.layout.scale,
-        sensitivity: 0.75, cloud: 0, continuous: true,
+        sensitivity: 0.75, cloud: 0, continuous: true, colourMap: page.colourMap,
       });
       if (token !== readToken) return;
       emptyGroup();
@@ -327,7 +355,7 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
       const { scale, center } = page.layout;
       r.object.scale.setScalar(scale);
       r.object.position.set(center[0], center[1], 0);
-      r.object.traverse((o) => { if (o.isMesh) o.material = wireMat; }); // one ink for every result
+      // The thread keeps the colours of the strokes it follows.
       group.add(r.object);
       anim = r.animation;
       closed = r.closed;
@@ -363,12 +391,13 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
     const paths = core.tubePaths(strokes);
     if (paths.length) {
       const radius = core.radiusFor(params.thickness);
-      const t = tubeMesh(paths, radius, 8);
+      const t = tubeMesh(paths, radius, 8, { colorAt: colourOf, colorBlend: 3 });
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.BufferAttribute(t.positions, 3));
+      g.setAttribute('color', new THREE.BufferAttribute(t.colors, 3));
       g.setIndex(new THREE.BufferAttribute(t.indices, 1));
       g.computeVertexNormals();
-      const wire = new THREE.Mesh(g, wireMat);
+      const wire = new THREE.Mesh(g, colourMat);
       wire.name = 'line';
       group.add(wire);
       closed = isClosed(t.indices);
