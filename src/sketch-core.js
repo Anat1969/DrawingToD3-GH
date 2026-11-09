@@ -7,14 +7,17 @@
 
 // result: 'sculpt' reads the drawing and winds it into space (the line sculpture engine),
 //         'line' keeps each line where the pen put it.
-export const SKETCH_DEFAULTS = { thickness: 0.35, plane: 'view', offset: 0, symmetry: false, snap: true, result: 'sculpt', depth: 0.5, wrap: 0.45, colour: '#1a1611' };
-// The pen's colours (Anat, 9.11.2026: "no colour in drawing in space, add it"). Ink first.
+export const SKETCH_DEFAULTS = { thickness: 0.35, plane: 'view', offset: 0, symmetry: false, snap: true, result: 'sculpt', depth: 0.5, wrap: 0.45, colour: '#c0392b', spray: 0.35 };
+// Colour is sprayed, not drawn (Anat, 9.11.2026: "the colour should be a brush, a spray"):
+// the pen draws ink, the spray lays soft translucent puffs in space, and the thread takes the
+// colour of the spray it passes through, as in the line sculpture. Ink first in the palette.
 export const PALETTE = ['#1a1611', '#c0392b', '#e67e22', '#f1c40f', '#27ae60', '#16a3a8', '#2e5fb8', '#7d3c98', '#d6538f'];
 const HEX = /^#[0-9a-f]{6}$/i;
 export const isColour = (c) => typeof c === 'string' && HEX.test(c);
 /** '#rrggbb' to [r, g, b] in 0..1 (ink when not a colour). */
+export const INK_HEX = '#1a1611';
 export function rgb(c) {
-  const h = isColour(c) ? c : SKETCH_DEFAULTS.colour;
+  const h = isColour(c) ? c : INK_HEX;
   return [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255];
 }
 export const RESULTS = ['sculpt', 'line'];
@@ -150,13 +153,103 @@ export function nearestPoint(strokes, project, sx, sy, maxPx = SNAP_PX) {
   return best;
 }
 
-/** Paths for the tube builder, in drawing order (weight 1: one line, one weight). */
-// Each point carries its stroke's colour as a fifth value, for the tube's vertex colours.
-export const tubePaths = (strokes) => strokes.filter((s) => s.pts.length >= 2).map((s) => { const c = rgb(s.c); return s.pts.map((p) => [p[0], p[1], p[2], 1, c]); });
+export const isSpray = (s) => !!s && s.k === 'spray';
+export const pens = (strokes) => strokes.filter((s) => !isSpray(s));
+export const sprays = (strokes) => strokes.filter(isSpray);
+
+/** Paths for the tube builder, in drawing order (weight 1: one line, one weight). Spray is not thread. */
+// A point carries its line's own colour as a fifth value only for lines drawn in colour before
+// the spray (9.11.2026); otherwise null, and the thread takes the colour of the spray around it.
+export const tubePaths = (strokes) => pens(strokes).filter((s) => s.pts.length >= 2).map((s) => { const c = isColour(s.c) ? rgb(s.c) : null; return s.pts.map((p) => [p[0], p[1], p[2], 1, c]); });
+
+/** Width of the spray cone where it meets the sheet, world units. */
+export const sprayWidth = (t) => 0.06 + 0.44 * clamp01(t ?? SKETCH_DEFAULTS.spray);
+
+// A small seeded random, so a sprayed stroke looks the same each time it is rebuilt or reopened.
+function seeded(seed) {
+  let a = (Math.floor(Math.abs(seed) * 1e5) % 2147483646) + 1;
+  return () => ((a = (a * 16807) % 2147483647) / 2147483647);
+}
+
+/**
+ * The airbrush: soft round puffs scattered around the gesture, in space (a Gaussian cloud, not a
+ * flat stripe), of many sizes and transparencies: dense where the hand passed, thinning out to
+ * the edge. A press without a move is a dab.
+ * @returns {{pos:number[], tint:number[], size:number[], alpha:number[]}}
+ */
+export function sprayPuffs(strokes, max = 24000) {
+  const pos = [], tint = [], size = [], alpha = [];
+  for (const s of sprays(strokes)) {
+    const W = Number.isFinite(s.w) ? s.w : sprayWidth();
+    const c = rgb(s.c);
+    const p0 = s.pts[0];
+    const rnd = seeded(p0[0] * 7.31 + p0[1] * 3.17 + p0[2] * 1.91 + s.pts.length);
+    const gauss = () => { let u = 0; for (let i = 0; i < 4; i++) u += rnd(); return (u - 2) * 0.87; }; // ~N(0, 0.5)
+    const step = W * 0.08;
+    const emit = (q, n) => {
+      for (let i = 0; i < n && size.length < max; i++) {
+        pos.push(q[0] + gauss() * W * 0.55, q[1] + gauss() * W * 0.55, q[2] + gauss() * W * 0.55);
+        const shade = 0.92 + rnd() * 0.16;            // pigment is never quite even
+        tint.push(Math.min(1, c[0] * shade), Math.min(1, c[1] * shade), Math.min(1, c[2] * shade));
+        size.push(W * (0.3 + Math.pow(rnd(), 2) * 0.9)); // many small, a few large
+        alpha.push(0.1 + rnd() * 0.3);
+      }
+    };
+    if (pathLength(s.pts) < step) { emit(p0, 24); continue; }
+    let carry = step;
+    for (let i = 1; i < s.pts.length; i++) {
+      const a = s.pts[i - 1], b = s.pts[i];
+      const seg = dist(a, b);
+      while (carry <= seg) {
+        const t = carry / (seg || 1);
+        emit([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t], 6);
+        carry += step;
+      }
+      carry -= seg;
+    }
+  }
+  return { pos, tint, size, alpha };
+}
+
+/**
+ * The spray's colour at a point of the thread: a soft blend of the sprays within reach, null over
+ * bare paper (the thread stays ink there). A grid of the spray strokes keeps it fast.
+ */
+export function sprayColourAt(strokes) {
+  const list = sprays(strokes);
+  if (!list.length) return () => null;
+  const cell = Math.max(...list.map((s) => (Number.isFinite(s.w) ? s.w : sprayWidth()))) * 0.6;
+  const grid = new Map();
+  const key = (x, y, z) => `${x},${y},${z}`;
+  for (const s of list) {
+    const R = (Number.isFinite(s.w) ? s.w : sprayWidth()) * 0.6;
+    const c = rgb(s.c);
+    for (const q of s.pts.length > 1 && pathLength(s.pts) > 1e-6 ? resample(s.pts, R / 3) : [s.pts[0]]) {
+      const k = key(Math.floor(q[0] / cell), Math.floor(q[1] / cell), Math.floor(q[2] / cell));
+      if (!grid.has(k)) grid.set(k, []);
+      grid.get(k).push([q, R, c]);
+    }
+  }
+  return (p) => {
+    const gx = Math.floor(p[0] / cell), gy = Math.floor(p[1] / cell), gz = Math.floor(p[2] / cell);
+    let r = 0, g = 0, b = 0, wsum = 0;
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+      const bucket = grid.get(key(gx + dx, gy + dy, gz + dz));
+      if (!bucket) continue;
+      for (const [q, R, c] of bucket) {
+        const d = dist(p, q);
+        if (d >= R) continue;
+        const w = 1 - d / R;
+        r += c[0] * w; g += c[1] * w; b += c[2] * w; wsum += w;
+      }
+    }
+    return wsum > 0 ? [r / wsum, g / wsum, b / wsum] : null;
+  };
+}
 
 /** Compact form for the archive: flat numbers, four decimals (a tenth of a millimetre at 1 unit = 1 m). */
 export function serialize(strokes) {
-  return strokes.map((s) => ({ g: s.g, ...(isColour(s.c) ? { c: s.c.toLowerCase() } : {}), p: s.pts.flatMap((q) => q.slice(0, 3).map((v) => Math.round(v * 1e4) / 1e4)) }));
+  return strokes.map((s) => ({ g: s.g, ...(isColour(s.c) ? { c: s.c.toLowerCase() } : {}), ...(isSpray(s) ? { k: 'spray', w: Math.round((Number.isFinite(s.w) ? s.w : sprayWidth()) * 1e4) / 1e4 } : {}), p: s.pts.flatMap((q) => q.slice(0, 3).map((v) => Math.round(v * 1e4) / 1e4)) }));
 }
 
 export function deserialize(list) {
@@ -169,7 +262,10 @@ export function deserialize(list) {
       const q = [Number(s.p[i]), Number(s.p[i + 1]), Number(s.p[i + 2])];
       if (q.every(Number.isFinite)) pts.push(q);
     }
-    if (pts.length >= 2) out.push({ g: Number.isFinite(s.g) ? s.g : out.length, pts, ...(isColour(s.c) ? { c: s.c.toLowerCase() } : {}) });
+    if (pts.length < 2) continue;
+    const st = { g: Number.isFinite(s.g) ? s.g : out.length, pts, ...(isColour(s.c) ? { c: s.c.toLowerCase() } : {}) };
+    if (s.k === 'spray') { st.k = 'spray'; st.w = Number.isFinite(s.w) ? Math.max(0.01, Math.min(1, s.w)) : sprayWidth(); }
+    out.push(st);
   }
   return out;
 }
@@ -185,6 +281,7 @@ export function normalizeParams(p = {}) {
     symmetry: typeof p.symmetry === 'boolean' ? p.symmetry : SKETCH_DEFAULTS.symmetry,
     snap: typeof p.snap === 'boolean' ? p.snap : SKETCH_DEFAULTS.snap,
     colour: isColour(p.colour) ? p.colour.toLowerCase() : SKETCH_DEFAULTS.colour,
+    spray: Number.isFinite(p.spray) ? clamp01(p.spray) : SKETCH_DEFAULTS.spray,
     result: RESULTS.includes(p.result) ? p.result : SKETCH_DEFAULTS.result,
     depth: Number.isFinite(p.depth) ? clamp01(p.depth) : SKETCH_DEFAULTS.depth,
     wrap: Number.isFinite(p.wrap) ? clamp01(p.wrap) : SKETCH_DEFAULTS.wrap,
