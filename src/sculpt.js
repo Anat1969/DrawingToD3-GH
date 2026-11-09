@@ -214,8 +214,9 @@ function sceneSculpture(prepared, opts) {
   const { width: gw, height: gh } = prepared.pixels;
   const key = Math.round((opts.depth ?? LINE_DEFAULTS.depth) * 100);
   if (!prepared.sceneDepth || prepared.sceneDepth.key !== key) {
-    const { target, conf } = sceneAnchors(cam, label, things, sw, sh, gw, gh);
-    prepared.sceneDepth = { key, T: diffuseDepth(target, conf, luminance(prepared.pixels), gw, gh, { sigma: 22 }) };
+    const Lg = luminance(prepared.pixels);
+    const { target, conf } = sceneAnchors(cam, label, things, sw, sh, gw, gh, { luminance: Lg });
+    prepared.sceneDepth = { key, T: diffuseDepth(target, conf, Lg, gw, gh, { sigma: 22 }) };
   }
   const T = prepared.sceneDepth.T;
   const nearness = (x, y) => {
