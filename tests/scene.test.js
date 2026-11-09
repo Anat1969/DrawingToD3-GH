@@ -115,3 +115,13 @@ test('hills from shading: a sunlit mound stands nearer than the flat ground arou
   const sky = 10 * W + 45;
   assert.equal(hill.target[sky], flat.target[sky], 'the sky is not lifted');
 });
+
+test('hills rise with the depth slider: more relief, nearer hilltops; none at zero relief', async () => {
+  const { sceneAnchors } = await import('../src/scene-core.js');
+  const cam = sceneCamera(0.3, 1, 0.5);
+  const W = 90, H = 90, L = new Float32Array(W * H).fill(110);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const r = Math.hypot((x - 45) / 14, (y - 55) / 8); if (r < 1) L[y * W + x] = 110 + 90 * (1 - r * r); }
+  const p = 55 * W + 45;
+  const at = (relief) => sceneAnchors(cam, null, [], W, H, W, H, { luminance: L, relief }).target[p];
+  assert.ok(at(0) < at(0.5) && at(0.5) < at(1.5) && at(1.5) < at(2.5), [0, 0.5, 1.5, 2.5].map(at).map((v) => v.toFixed(3)).join(' < '));
+});
