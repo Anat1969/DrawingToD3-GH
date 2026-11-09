@@ -331,6 +331,7 @@ function sceneCloud(prepared, cam, at, amount) {
  */
 function colouredThread(prepared, strokes, opts, toPicture) {
   if (opts.colour === false) return null;
+  if (opts.colourMap) { const map = opts.colourMap; return (q) => { const [u, v] = toPicture(q); return map(u, v); }; } // colours given by the caller (drawing in space)
   const { width: w, height: h } = prepared.pixels;
   if (!strokes.colourMap) strokes.colourMap = threadColours(prepared.pixels, identityMarks(strokes, prepared.strokeImage, w, h));
   const map = strokes.colourMap;

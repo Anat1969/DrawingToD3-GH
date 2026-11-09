@@ -952,6 +952,12 @@ function syncSketchControls() {
   el.skThickness.value = Math.round(p.thickness * 100); el.skThicknessVal.textContent = el.skThickness.value;
   el.skSnap.checked = p.snap;
   el.skMirror.checked = p.symmetry;
+  const preset = [...document.querySelectorAll('[data-colour]')].some((b) => b.dataset.colour === p.colour);
+  document.querySelectorAll('[data-colour]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.colour === p.colour)));
+  const custom = document.getElementById('skColour');
+  custom.value = p.colour;
+  custom.closest('.swatch').classList.toggle('on', !preset);
+  custom.closest('.swatch').style.setProperty('--sw', preset ? 'transparent' : p.colour);
 }
 
 const PLANE_HINT = { view: 'המשטח עומד מול המבט. מקיפים, והקו הבא נוחת בעומק אחר.', wall: 'מציירים על קיר קבוע. "עומק המשטח" מקרב ומרחיק אותו.', side: 'מציירים על קיר צד. מקיפים מעט כדי לראות אותו.', floor: 'מציירים על הרצפה. "עומק המשטח" מרים אותה לגובה.' };
@@ -985,6 +991,17 @@ document.querySelectorAll('[data-tool]').forEach((b) => b.addEventListener('clic
   syncSketchControls();
   onSketchChange(sketch.state);
 }));
+// Pen colour (9.11.2026): the next line is drawn in it; lines already drawn keep theirs.
+document.querySelectorAll('[data-colour]').forEach((b) => b.addEventListener('click', () => {
+  sketch.setParams({ colour: b.dataset.colour });
+  syncSketchControls();
+  saveDraft();
+}));
+document.getElementById('skColour').addEventListener('input', (e) => {
+  sketch.setParams({ colour: e.target.value });
+  syncSketchControls();
+  saveDraft();
+});
 document.querySelectorAll('[data-plane]').forEach((b) => b.addEventListener('click', () => {
   sketch.setParams({ plane: b.dataset.plane });
   syncSketchControls();

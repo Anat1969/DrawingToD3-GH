@@ -96,7 +96,7 @@ test('archive: strokes survive a round trip, and broken data is ignored', () => 
   assert.ok(back[0].pts.every((p, i) => dist(p, strokes[0].pts[i]) < 1e-3));
   assert.deepEqual(deserialize([null, { p: [1, 2] }, { p: ['a', 1, 2, 3, 4, 5] }, 'x']), []);
   assert.equal(nextGroup(back), 1);
-  assert.deepEqual(normalizeParams({ plane: 'roof', thickness: 4 }), { thickness: 1, plane: 'view', offset: 0, symmetry: false, snap: true, result: 'sculpt', depth: 0.5, wrap: 0.45 });
+  assert.deepEqual(normalizeParams({ plane: 'roof', thickness: 4 }), { thickness: 1, plane: 'view', offset: 0, symmetry: false, snap: true, colour: '#1a1611', result: 'sculpt', depth: 0.5, wrap: 0.45 });
 });
 
 test('every drawing is a closed wire, printable, with one weight', async () => {
@@ -127,4 +127,20 @@ test('reading the drawing: the page fits the strokes, and the engine maps back o
   assert.ok(Math.abs(L.center[0] + engine * L.scale - 0.5) < 1e-9, 'a page point returns to where it was drawn');
   assert.equal(paperLayout([]), null);
   assert.deepEqual([normalizeParams({}).result, normalizeParams({ result: 'line' }).result], ['sculpt', 'line'], 'reading the drawing is the default');
+});
+
+test('colour: each line keeps its pen colour, in the tube and through the archive', async () => {
+  const { rgb, isColour, PALETTE } = await import('../src/sketch-core.js');
+  assert.ok(PALETTE.every(isColour) && PALETTE[0] === '#1a1611', 'a palette of real colours, ink first');
+  assert.deepEqual(rgb('#ff8000').map((v) => Math.round(v * 255)), [255, 128, 0]);
+  const strokes = [{ g: 0, pts: [[0, 1, 0], [0.4, 1.1, 0], [0.8, 1, 0]], c: '#c0392b' }, { g: 1, pts: [[0, 0.5, 0], [0.5, 0.5, 0.2]] }];
+  const back = deserialize(JSON.parse(JSON.stringify(serialize(strokes))));
+  assert.equal(back[0].c, '#c0392b', 'the colour survives the archive');
+  assert.equal(back[1].c, undefined, 'a line without a colour stays ink');
+  assert.deepEqual(deserialize([{ g: 0, c: 'red; drop', p: [0, 0, 0, 1, 1, 1] }])[0].c, undefined, 'only real colours are read back');
+  const tube = tubeMesh(tubePaths(strokes), 0.01, 6, { colorAt: (q) => q[4] });
+  const first = Array.from(tube.colors.slice(0, 3)).map((v) => Math.round(v * 255));
+  assert.deepEqual(first, [192, 57, 43], 'the red line is red in the tube');
+  const last = Array.from(tube.colors.slice(-3)).map((v) => Math.round(v * 255));
+  assert.deepEqual(last, [26, 22, 17], 'the plain line is ink');
 });
