@@ -156,9 +156,22 @@ export function standingThings(ink, W, H, horizonRow, opts = {}) {
  * @param label, things  from standingThings, over a W x H grid (the stroke image)
  * @param gw, gh         the grid of the anchors (smaller, e.g. the 200 px analysis)
  */
-export function sceneAnchors(cam, label, things, W, H, gw, gh) {
+export function sceneAnchors(cam, label, things, W, H, gw, gh, opts = {}) {
   const N = gw * gh, t = new Float32Array(N), c = new Float32Array(N);
   const tFar = cam.near / cam.far;
+  // Hills from shading (Anat, 9.11.2026): in sunlight the face of a hill turned to the light is
+  // brighter than the land around it. A bright patch on the ground is raised: it takes the
+  // nearness of the ground a little lower in the picture, the way a real hill stands in front of
+  // the ground behind it. The diffusion gives the rest of the hill its body.
+  const L = opts.luminance || null;
+  const relief = opts.relief ?? 1.5; // measured on the desert: 0.5 lifted the hills to 0.2 of the eye height, 1.5 to 0.4
+  let lift = null;
+  if (L && relief > 0) {
+    const fine = boxBlur(L, gw, gh, Math.max(1, Math.round(gh / 90)));
+    const wide = boxBlur(L, gw, gh, Math.max(3, Math.round(gh / 7)));
+    lift = new Float32Array(N);
+    for (let p = 0; p < N; p++) lift[p] = Math.max(0, Math.min(1, (fine[p] - wide[p]) / 45));
+  }
   for (let y = 0; y < gh; y++) for (let x = 0; x < gw; x++) {
     const p = y * gw + x;
     const sx = Math.round((x / (gw - 1)) * (W - 1)), sy = Math.round((y / (gh - 1)) * (H - 1));
@@ -169,7 +182,11 @@ export function sceneAnchors(cam, label, things, W, H, gw, gh) {
       c[p] = 0.9;
       continue;
     }
-    const d = cam.groundDepth(v);
+    let d = cam.groundDepth(v);
+    if (lift && d < cam.far && lift[p] > 0) {
+      // Raised by up to 12% of the picture height, on the open ground only.
+      d = cam.groundDepth(Math.min(1, v + relief * 0.12 * lift[p]));
+    }
     t[p] = cam.near / d;
     // Sure on the open ground and high in the sky; gentle near the horizon, where the
     // diffusion decides how the ground turns into the back wall.
@@ -186,4 +203,16 @@ export function sceneAnchors(cam, label, things, W, H, gw, gh) {
 export function rayPoint(cam, u, v, t) {
   const d = cam.near / Math.max(1e-4, t);
   return [((u - cam.aspect / 2) * d) / cam.f, cam.hc - ((v - cam.vh) * d) / cam.f, -d];
+}
+
+// Mean of a (2r+1)^2 box around every pixel (integral image).
+function boxBlur(v, W, H, r) {
+  const I = new Float64Array((W + 1) * (H + 1));
+  for (let y = 0; y < H; y++) { let row = 0; for (let x = 0; x < W; x++) { row += v[y * W + x]; I[(y + 1) * (W + 1) + x + 1] = I[y * (W + 1) + x + 1] + row; } }
+  const out = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const x0 = Math.max(0, x - r), x1 = Math.min(W, x + r + 1), y0 = Math.max(0, y - r), y1 = Math.min(H, y + r + 1);
+    out[y * W + x] = (I[y1 * (W + 1) + x1] - I[y0 * (W + 1) + x1] - I[y1 * (W + 1) + x0] + I[y0 * (W + 1) + x0]) / ((x1 - x0) * (y1 - y0));
+  }
+  return out;
 }

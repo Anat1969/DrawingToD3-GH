@@ -97,3 +97,21 @@ test('landscape diffusion: one continuous depth, the picture unchanged from its 
     assert.ok(Math.abs(cam.aspect / 2 + (x * cam.f) / d - u) < 1e-9 && Math.abs(cam.vh + ((cam.hc - y) * cam.f) / d - v) < 1e-9);
   }
 });
+
+test('hills from shading: a sunlit mound stands nearer than the flat ground around it', async () => {
+  const { sceneAnchors } = await import('../src/scene-core.js');
+  const cam = sceneCamera(0.3, 1, 0.5);
+  const W = 90, H = 90, L = new Float32Array(W * H).fill(110);
+  // A mound on the ground: a lit face, brighter than the land around it.
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const r = Math.hypot((x - 45) / 14, (y - 55) / 8);
+    if (r < 1) L[y * W + x] = 110 + 90 * (1 - r * r);
+  }
+  const flat = sceneAnchors(cam, null, [], W, H, W, H);
+  const hill = sceneAnchors(cam, null, [], W, H, W, H, { luminance: L });
+  const p = 55 * W + 45, q = 55 * W + 10;
+  assert.ok(hill.target[p] > flat.target[p] * 1.15, `the mound comes forward (${flat.target[p].toFixed(2)} to ${hill.target[p].toFixed(2)})`);
+  assert.ok(Math.abs(hill.target[q] - flat.target[q]) < 1e-6, 'the flat ground beside it stays');
+  const sky = 10 * W + 45;
+  assert.equal(hill.target[sky], flat.target[sky], 'the sky is not lifted');
+});
