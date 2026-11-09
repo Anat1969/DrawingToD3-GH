@@ -215,7 +215,9 @@ function sceneSculpture(prepared, opts) {
   const key = Math.round((opts.depth ?? LINE_DEFAULTS.depth) * 100);
   if (!prepared.sceneDepth || prepared.sceneDepth.key !== key) {
     const Lg = luminance(prepared.pixels);
-    const { target, conf } = sceneAnchors(cam, label, things, sw, sh, gw, gh, { luminance: Lg });
+    // The depth slider also sets how high the hills rise (9.11.2026): 0.5 at 0, 1.5 at the default, 2.5 at 100.
+    const relief = 0.5 + 2 * Math.max(0, Math.min(1, opts.depth ?? LINE_DEFAULTS.depth));
+    const { target, conf } = sceneAnchors(cam, label, things, sw, sh, gw, gh, { luminance: Lg, relief });
     prepared.sceneDepth = { key, T: diffuseDepth(target, conf, Lg, gw, gh, { sigma: 22 }) };
   }
   const T = prepared.sceneDepth.T;
