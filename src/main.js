@@ -950,6 +950,8 @@ function syncSketchControls() {
   el.skWrap.value = Math.round(p.wrap * 100); el.skWrapVal.textContent = el.skWrap.value;
   el.skOffset.value = Math.round(p.offset * 100); el.skOffsetVal.textContent = el.skOffset.value;
   el.skThickness.value = Math.round(p.thickness * 100); el.skThicknessVal.textContent = el.skThickness.value;
+  const spray = document.getElementById('skSpray');
+  spray.value = Math.round(p.spray * 100); document.getElementById('skSprayVal').textContent = spray.value;
   el.skSnap.checked = p.snap;
   el.skMirror.checked = p.symmetry;
   const preset = [...document.querySelectorAll('[data-colour]')].some((b) => b.dataset.colour === p.colour);
@@ -971,7 +973,7 @@ function onSketchChange(st) {
   el.skNew.disabled = !st.count && !state.sketchId;
   setFacts(stage.info);
   setDownloads({ local: true });
-  el.caption.innerHTML = `<span>SKETCH / <span dir="ltr">${st.groups}</span> קווים</span><span>${sketch.tool === 'orbit' ? 'גוררים להקפה' : 'גוררים לציור · ימני להקפה'}</span>`;
+  el.caption.innerHTML = `<span>SKETCH / <span dir="ltr">${st.groups}</span> קווים</span><span>${sketch.tool === 'orbit' ? 'גוררים להקפה' : sketch.tool === 'spray' ? 'גוררים לריסוס · ימני להקפה' : 'גוררים לציור · ימני להקפה'}</span>`;
   setPhase(state.phase);
   const kept = saveDraft();
   if (!kept) setSketchStatus('הטיוטה גדולה מדי לשמירה אוטומטית בדפדפן. שומרים לארכיון כדי לא לאבד אותה.', 'error');
@@ -991,15 +993,18 @@ document.querySelectorAll('[data-tool]').forEach((b) => b.addEventListener('clic
   syncSketchControls();
   onSketchChange(sketch.state);
 }));
-// Pen colour (9.11.2026): the next line is drawn in it; lines already drawn keep theirs.
-document.querySelectorAll('[data-colour]').forEach((b) => b.addEventListener('click', () => {
-  sketch.setParams({ colour: b.dataset.colour });
+// Colour is a spray (Anat, 9.11.2026): picking a colour takes the spray in hand.
+function pickColour(colour) {
+  sketch.setParams({ colour });
+  if (sketch.tool !== 'spray') sketch.setTool('spray');
   syncSketchControls();
-  saveDraft();
-}));
-document.getElementById('skColour').addEventListener('input', (e) => {
-  sketch.setParams({ colour: e.target.value });
-  syncSketchControls();
+  onSketchChange(sketch.state);
+}
+document.querySelectorAll('[data-colour]').forEach((b) => b.addEventListener('click', () => pickColour(b.dataset.colour)));
+document.getElementById('skColour').addEventListener('input', (e) => pickColour(e.target.value));
+document.getElementById('skSpray').addEventListener('input', (e) => {
+  document.getElementById('skSprayVal').textContent = e.target.value;
+  sketch.setParams({ spray: e.target.value / 100 });
   saveDraft();
 });
 document.querySelectorAll('[data-plane]').forEach((b) => b.addEventListener('click', () => {

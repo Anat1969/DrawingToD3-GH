@@ -9,7 +9,7 @@
 import * as THREE from 'three';
 import { tubeMesh } from './line-core.js';
 import { isClosed } from './sculpt-core.js';
-import { drawingAnimation, prepareSculpt, lineSculpture } from './sculpt.js';
+import { drawingAnimation, prepareSculpt, lineSculpture, cloudPoints } from './sculpt.js';
 import * as core from './sketch-core.js';
 
 const INK = 0x1a1611;   // one line, one colour (the same as the line sculpture)
@@ -21,9 +21,11 @@ const PENCIL = 0x6b6457;
 export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => {} } = {}) {
   const { scene, camera, controls, canvas } = stage;
   const wireMat = new THREE.MeshStandardMaterial({ color: INK, roughness: 0.4, metalness: 0.3 });
-  // Coloured lines: each vertex carries its stroke's colour (9.11.2026).
+  // The thread's colour: its own (lines drawn in colour before the spray), else the spray it
+  // passes through, else ink (9.11.2026).
   const colourMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.45, metalness: 0.15 });
-  const colourOf = (q) => q[4] || core.rgb();
+  let sprayAt = () => null;
+  const colourOf = (q) => q[4] || sprayAt(q) || core.rgb();
   const group = new THREE.Group();
   group.name = 'sketch';
 
@@ -84,6 +86,7 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
   const live = new THREE.Mesh(new THREE.BufferGeometry(), colourMat);
   live.visible = false;
   helpers.add(live);
+  let liveCloud = null; // the spray being laid right now
 
   /* ---------- the sheet in space ---------- */
   const viewNow = () => ({ position: camera.position.toArray(), target: controls.target.toArray() });
@@ -122,14 +125,16 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
     const r = canvas.getBoundingClientRect();
     return [(tmp.x * 0.5 + 0.5) * r.width, (-tmp.y * 0.5 + 0.5) * r.height, tmp.z > -1 && tmp.z < 1];
   }
-  const snapAt = (ray) => (params.snap && strokes.length ? core.nearestPoint(strokes, project, ray.x, ray.y) : null);
+  const snapAt = (ray) => (tool === 'pen' && params.snap && strokes.length ? core.nearestPoint(core.pens(strokes), project, ray.x, ray.y) : null);
 
   function showPen(p, snapping) {
     pen.visible = !!p;
     drop.visible = foot.visible = !!p && p[1] > 0.02;
     if (!p) return;
     pen.position.set(...p);
-    ring.visible = !!snapping;
+    // With the spray, the ring shows how wide the spray lands.
+    ring.visible = !!snapping || spraying();
+    ring.scale.setScalar(spraying() && !snapping ? core.sprayWidth(params.spray) / 0.11 : 1);
     const a = dropGeo.attributes.position;
     a.setXYZ(0, p[0], p[1], p[2]);
     a.setXYZ(1, p[0], 0, p[2]);
@@ -142,6 +147,7 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
   let drawing = null; // { id, raw, s, last }
   const pointers = new Set();
   const orbitNow = () => tool === 'orbit' || tempOrbit;
+  const spraying = () => tool === 'spray';
 
   function startStroke(e) {
     const ray = rayFrom(e);
@@ -152,7 +158,7 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
     if (!first) return;
     onBeforeDraw();
     strokePlane = plane;
-    drawing = { id: e.pointerId, raw: [first], s: first, last: first, spin: controls.autoRotate };
+    drawing = { id: e.pointerId, raw: [first], s: first, last: first, spin: controls.autoRotate, spray: spraying() };
     controls.autoRotate = false; // the sheet must not turn under the pen
     showPen(first, !!hit);
     renderLive();
@@ -174,31 +180,46 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
     drawing = null;
     strokePlane = null;
     live.visible = false;
+    dropLiveCloud();
     if (!d) return;
     controls.autoRotate = d.spin;
     if (!commit) return;
-    const pts = core.finishStroke([...d.raw, d.last]);
+    // The pen draws ink; the spray lays colour (a press without a move is a dab of spray).
+    const pts = core.finishStroke([...d.raw, d.last]) || (d.spray ? [d.raw[0].slice(), d.raw[0].slice()] : null);
     if (!pts) return;
     undoStack.push(strokes);
     redoStack = [];
     const g = core.nextGroup(strokes);
-    const c = params.colour;
-    const next = [...strokes, { g, pts, c }];
+    const kind = d.spray ? { c: params.colour, k: 'spray', w: core.sprayWidth(params.spray) } : {};
+    const next = [...strokes, { g, pts, ...kind }];
     const onAxis = pts.every((p) => Math.abs(p[0] - core.CENTER[0]) < 0.01);
-    if (params.symmetry && !onAxis) next.push({ g, pts: core.mirror(pts), c });
+    if (params.symmetry && !onAxis) next.push({ g, pts: core.mirror(pts), ...kind });
     strokes = next;
     rebuild();
   }
 
   let liveFrame = 0;
   function scheduleLive() { if (!liveFrame) liveFrame = requestAnimationFrame(() => { liveFrame = 0; renderLive(); }); }
+  function dropLiveCloud() {
+    if (!liveCloud) return;
+    helpers.remove(liveCloud);
+    liveCloud.geometry.dispose();
+    liveCloud.material.dispose();
+    liveCloud = null;
+  }
   function renderLive() {
     if (!drawing) return;
     const pts = drawing.raw.length > 1 ? drawing.raw : [drawing.raw[0], drawing.s];
     const paths = [pts];
     if (params.symmetry) paths.push(core.mirror(pts));
-    const pen = core.rgb(params.colour);
-    const t = tubeMesh(paths.map((p) => p.map((q) => [q[0], q[1], q[2], 1, pen])), core.radiusFor(params.thickness), 8, { colorAt: colourOf });
+    if (drawing.spray) {
+      const kind = { c: params.colour, k: 'spray', w: core.sprayWidth(params.spray) };
+      const c = core.sprayPuffs(paths.map((p, i) => ({ g: i, pts: p.length > 1 ? p : [p[0], p[0]], ...kind })));
+      dropLiveCloud();
+      if (c.size.length) { liveCloud = cloudPoints(c.pos, c.tint, c.size, c.alpha); helpers.add(liveCloud); }
+      return;
+    }
+    const t = tubeMesh(paths.map((p) => p.map((q) => [q[0], q[1], q[2], 1, null])), core.radiusFor(params.thickness), 8, { colorAt: colourOf });
     live.geometry.dispose();
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(t.positions, 3));
@@ -269,11 +290,11 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
   function drawPencil() {
     for (const o of [...pencil.children]) { pencil.remove(o); o.geometry.dispose(); }
     if (params.result !== 'sculpt') return;
-    for (const s of strokes) {
+    for (const s of core.pens(strokes)) {
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute(s.pts.flat(), 3));
-      // The pencil keeps the stroke's colour, softened, so the sheet shows what was drawn in which colour.
-      const m = core.isColour(s.c) && s.c !== core.SKETCH_DEFAULTS.colour ? new THREE.LineBasicMaterial({ color: s.c, transparent: true, opacity: 0.6, depthWrite: false }) : pencilMat;
+      // A line drawn in colour (before the spray) keeps it on the pencil, softened.
+      const m = core.isColour(s.c) && s.c !== core.INK_HEX ? new THREE.LineBasicMaterial({ color: s.c, transparent: true, opacity: 0.6, depthWrite: false }) : pencilMat;
       pencil.add(new THREE.Line(g, m));
     }
   }
@@ -283,12 +304,36 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
       group.remove(o);
       o.traverse((c) => {
         if (c.geometry) c.geometry.dispose();
-        if (c.isSprite) { c.material.map?.dispose(); c.material.dispose(); }
+        if (c.isSprite || c.isPoints) { c.material.map?.dispose(); c.material.dispose(); }
       });
     }
     anim = null;
     closed = null;
     reading = null;
+  }
+
+  // The sprayed colour, as the line sculpture's colour cloud: soft puffs in space.
+  function sprayCloud() {
+    const c = core.sprayPuffs(strokes);
+    if (!c.size.length) return null;
+    const p = cloudPoints(c.pos, c.tint, c.size, c.alpha);
+    p.name = 'spray';
+    return p;
+  }
+  // The thread is drawn first and the colour sprayed in at the end, as in the line sculpture.
+  function withSpray(base, cloud) {
+    if (!cloud) return base;
+    const n = cloud.geometry.attributes.position.count;
+    const share = base ? 0.86 : 0;
+    return {
+      duration: base ? base.duration : 6,
+      set(p) {
+        p = Math.max(0, Math.min(1, p));
+        if (base) base.set(Math.min(1, p / share));
+        const q = share ? (p - share) / (1 - share) : p;
+        cloud.geometry.setDrawRange(0, p >= 1 ? Infinity : Math.floor(Math.max(0, q) * n));
+      },
+    };
   }
 
   // Reading: strokes to a page, the page through the line engine, the result back onto the strokes.
@@ -300,12 +345,13 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
   let sliderFrame = 0;    // slider moves are read once per frame
   async function readDrawing() {
     const token = ++readToken;
-    if (!strokes.length) { emptyGroup(); busy = false; finish(); return; }
+    const inked = core.pens(strokes);
+    if (!inked.length) { emptyGroup(); const cloud = sprayCloud(); if (cloud) { group.add(cloud); anim = withSpray(null, cloud); } busy = false; finish(); return; }
     busy = true;
     onChange(api.state);
     try {
       if (!page || page.version !== version) {
-        const layout = core.paperLayout(strokes, 560);
+        const layout = core.paperLayout(inked, 560);
         const c = document.createElement('canvas');
         c.width = layout.width;
         c.height = layout.height;
@@ -315,16 +361,21 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
         g.strokeStyle = '#141210';
         g.lineWidth = layout.line;
         g.lineCap = g.lineJoin = 'round';
-        // The page is read in ink; the colours are painted on a second page, wide, so the wound
-        // thread takes the colour of the drawn line it binds (and ink where nothing was drawn).
+        // The page is read in ink; the colours are painted on a second page, so the wound thread
+        // takes the colour of the spray it passes through (and ink over bare paper). Lines drawn
+        // in colour before the spray are painted too, wide, around the line they were.
         const cc = document.createElement('canvas');
         cc.width = layout.width; cc.height = layout.height;
         const cg = cc.getContext('2d');
         cg.lineCap = cg.lineJoin = 'round';
-        cg.lineWidth = Math.max(layout.width, layout.height) * 0.07;
+        const pxPerUnit = Math.max(layout.width, layout.height) / (2 * layout.scale);
         for (const s of strokes) {
-          if (!core.isColour(s.c) || s.c === core.SKETCH_DEFAULTS.colour) continue;
-          cg.strokeStyle = s.c;
+          const spray = core.isSpray(s);
+          if (!core.isColour(s.c) || (!spray && s.c === core.INK_HEX)) continue;
+          cg.strokeStyle = cg.fillStyle = s.c;
+          cg.lineWidth = spray ? s.w * pxPerUnit * 1.1 : Math.max(layout.width, layout.height) * 0.07;
+          const [x0, y0] = layout.toPage(s.pts[0]);
+          if (core.pathLength(s.pts) < 1e-6) { cg.beginPath(); cg.arc(x0, y0, cg.lineWidth / 2, 0, Math.PI * 2); cg.fill(); continue; }
           cg.beginPath();
           s.pts.forEach((p, i) => { const [x, y] = layout.toPage(p); if (i) cg.lineTo(x, y); else cg.moveTo(x, y); });
           cg.stroke();
@@ -335,7 +386,7 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
           const i = (y * cc.width + x) * 4;
           return cdata[i + 3] > 40 ? [cdata[i] / 255, cdata[i + 1] / 255, cdata[i + 2] / 255] : core.rgb();
         };
-        for (const s of strokes) {
+        for (const s of inked) {
           g.beginPath();
           s.pts.forEach((p, i) => { const [x, y] = layout.toPage(p); if (i) g.lineTo(x, y); else g.moveTo(x, y); });
           g.stroke();
@@ -355,9 +406,10 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
       const { scale, center } = page.layout;
       r.object.scale.setScalar(scale);
       r.object.position.set(center[0], center[1], 0);
-      // The thread keeps the colours of the strokes it follows.
       group.add(r.object);
-      anim = r.animation;
+      const cloud = sprayCloud();
+      if (cloud) group.add(cloud);
+      anim = withSpray(r.animation, cloud);
       closed = r.closed;
       reading = { lines: r.lines, loops: r.loops, error: null };
     } catch (err) {
@@ -378,6 +430,7 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
 
   function rebuild() {
     version++;
+    sprayAt = core.sprayColourAt(strokes);
     drawPencil();
     if (params.result === 'sculpt') { readDrawing(); return; }
     readToken++;
@@ -389,6 +442,8 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
   function buildLines() {
     emptyGroup();
     const paths = core.tubePaths(strokes);
+    const cloud = sprayCloud();
+    if (!paths.length && cloud) { group.add(cloud); anim = withSpray(null, cloud); }
     if (paths.length) {
       const radius = core.radiusFor(params.thickness);
       const t = tubeMesh(paths, radius, 8, { colorAt: colourOf, colorBlend: 3 });
@@ -401,7 +456,8 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
       wire.name = 'line';
       group.add(wire);
       closed = isClosed(t.indices);
-      anim = drawingAnimation(group, g, t.timeline, null, radius);
+      if (cloud) group.add(cloud);
+      anim = drawingAnimation(group, g, t.timeline, cloud, radius);
     }
   }
 
@@ -435,7 +491,7 @@ export function createSketch(stage, { onChange = () => {}, onBeforeDraw = () => 
     undo() { if (!undoStack.length) return; redoStack.push(strokes); strokes = undoStack.pop(); rebuild(); },
     redo() { if (!redoStack.length) return; undoStack.push(strokes); strokes = redoStack.pop(); rebuild(); },
     clear() { if (!strokes.length) return; undoStack.push(strokes); redoStack = []; strokes = []; rebuild(); },
-    setTool(next) { tool = next === 'orbit' ? 'orbit' : 'pen'; if (drawing) endStroke(false); showPen(null); applyControls(); },
+    setTool(next) { tool = ['orbit', 'spray'].includes(next) ? next : 'pen'; if (drawing) endStroke(false); showPen(null); applyControls(); },
     setParams(p) {
       const before = params;
       params = core.normalizeParams({ ...params, ...p });

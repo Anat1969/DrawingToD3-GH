@@ -647,7 +647,7 @@ function colourCloud(prepared, sample, zScale, gxy, toWorld, amount, isWash) {
 }
 
 /** Soft airbrush puffs: positions, colours, world sizes and opacities. */
-function cloudPoints(pos, tint, size, alpha) {
+export function cloudPoints(pos, tint, size, alpha) {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('tint', new THREE.Float32BufferAttribute(tint, 3));

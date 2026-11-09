@@ -96,7 +96,7 @@ test('archive: strokes survive a round trip, and broken data is ignored', () => 
   assert.ok(back[0].pts.every((p, i) => dist(p, strokes[0].pts[i]) < 1e-3));
   assert.deepEqual(deserialize([null, { p: [1, 2] }, { p: ['a', 1, 2, 3, 4, 5] }, 'x']), []);
   assert.equal(nextGroup(back), 1);
-  assert.deepEqual(normalizeParams({ plane: 'roof', thickness: 4 }), { thickness: 1, plane: 'view', offset: 0, symmetry: false, snap: true, colour: '#1a1611', result: 'sculpt', depth: 0.5, wrap: 0.45 });
+  assert.deepEqual(normalizeParams({ plane: 'roof', thickness: 4 }), { thickness: 1, plane: 'view', offset: 0, symmetry: false, snap: true, colour: '#c0392b', spray: 0.35, result: 'sculpt', depth: 0.5, wrap: 0.45 });
 });
 
 test('every drawing is a closed wire, printable, with one weight', async () => {
@@ -129,7 +129,7 @@ test('reading the drawing: the page fits the strokes, and the engine maps back o
   assert.deepEqual([normalizeParams({}).result, normalizeParams({ result: 'line' }).result], ['sculpt', 'line'], 'reading the drawing is the default');
 });
 
-test('colour: each line keeps its pen colour, in the tube and through the archive', async () => {
+test('colour: a line drawn in colour before the spray keeps it, in the tube and through the archive', async () => {
   const { rgb, isColour, PALETTE } = await import('../src/sketch-core.js');
   assert.ok(PALETTE.every(isColour) && PALETTE[0] === '#1a1611', 'a palette of real colours, ink first');
   assert.deepEqual(rgb('#ff8000').map((v) => Math.round(v * 255)), [255, 128, 0]);
@@ -138,9 +138,53 @@ test('colour: each line keeps its pen colour, in the tube and through the archiv
   assert.equal(back[0].c, '#c0392b', 'the colour survives the archive');
   assert.equal(back[1].c, undefined, 'a line without a colour stays ink');
   assert.deepEqual(deserialize([{ g: 0, c: 'red; drop', p: [0, 0, 0, 1, 1, 1] }])[0].c, undefined, 'only real colours are read back');
-  const tube = tubeMesh(tubePaths(strokes), 0.01, 6, { colorAt: (q) => q[4] });
+  const tube = tubeMesh(tubePaths(strokes), 0.01, 6, { colorAt: (q) => q[4] || rgb() });
   const first = Array.from(tube.colors.slice(0, 3)).map((v) => Math.round(v * 255));
   assert.deepEqual(first, [192, 57, 43], 'the red line is red in the tube');
   const last = Array.from(tube.colors.slice(-3)).map((v) => Math.round(v * 255));
   assert.deepEqual(last, [26, 22, 17], 'the plain line is ink');
+});
+
+test('spray: colour is a soft cloud in space, not thread, and the thread takes its colour', async () => {
+  const { sprayPuffs, sprayColourAt, sprayWidth, pens, rgb } = await import('../src/sketch-core.js');
+  const W = sprayWidth(0.35);
+  const spray = { g: 1, k: 'spray', c: '#2e5fb8', w: W, pts: finishStroke([[-0.6, 1, 0], [0, 1.05, 0], [0.6, 1, 0]]) };
+  const line = { g: 0, pts: finishStroke([[-0.6, 1, 0], [0.6, 1, 0]]) };
+  const far = { g: 2, pts: finishStroke([[-0.6, 0.2, 0], [0.6, 0.2, 0]]) };
+  const strokes = [line, spray, far];
+
+  // Not thread: the spray never becomes a tube, and the pen never snaps to it.
+  assert.equal(tubePaths(strokes).length, 2);
+  assert.deepEqual(pens(strokes), [line, far]);
+
+  // A cloud: many puffs, of many sizes and transparencies, around the gesture, in depth too.
+  const c = sprayPuffs(strokes);
+  const n = c.size.length;
+  assert.ok(n > 100, `${n} puffs`);
+  assert.ok(Math.max(...c.size) / Math.min(...c.size) > 2.5, 'many sizes');
+  assert.ok(Math.max(...c.alpha) <= 0.4 && Math.min(...c.alpha) >= 0.1, 'translucent, never solid');
+  const z = c.pos.filter((_, i) => i % 3 === 2);
+  assert.ok(Math.max(...z) - Math.min(...z) > W * 0.5, 'a cloud in space, not a flat stripe');
+  const ys = c.pos.filter((_, i) => i % 3 === 1);
+  const near = ys.filter((y) => Math.abs(y - 1.02) < W).length / n;
+  assert.ok(near > 0.9, `dense where the hand passed (${(near * 100).toFixed(0)}%)`);
+  assert.deepEqual(sprayPuffs(strokes), c, 'the same cloud every time the work is rebuilt or reopened');
+
+  // A dab: a press without a move still sprays.
+  assert.ok(sprayPuffs([{ g: 0, k: 'spray', c: '#c0392b', w: W, pts: [[0, 1, 0], [0, 1, 0]] }]).size.length >= 10);
+
+  // The thread inside the spray takes its colour, over bare paper it stays ink.
+  const at = sprayColourAt(strokes);
+  assert.deepEqual(at([0, 1, 0]).map((v) => Math.round(v * 255)), [46, 95, 184]);
+  assert.equal(at([0, 0.2, 0]), null);
+  // Two sprays meet in a soft blend.
+  const mix = sprayColourAt([{ ...spray, c: '#ff0000', pts: [[-0.1, 1, 0], [-0.05, 1, 0]] }, { ...spray, c: '#0000ff', pts: [[0.1, 1, 0], [0.05, 1, 0]] }])([0, 1, 0]);
+  assert.ok(mix[0] > 0.3 && mix[2] > 0.3, 'a transition between colours, not a seam');
+
+  // Through the archive.
+  const back = deserialize(JSON.parse(JSON.stringify(serialize(strokes))));
+  assert.equal(back[1].k, 'spray');
+  assert.ok(Math.abs(back[1].w - W) < 1e-3);
+  assert.equal(back[0].k, undefined);
+  assert.ok(rgb(back[1].c)[2] > 0.7);
 });
